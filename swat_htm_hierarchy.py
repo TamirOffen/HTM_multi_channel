@@ -602,7 +602,7 @@ def runner(input_data,parameters):
 
     data = {"Input": inputs, "1 Step Prediction": pred1, "5 Step Prediction": pred5,
             "Anomaly Score": anomaly, "Anomaly Likelihood": anomalyProb}
-    result ={"data": data, "output_filepath": output_filepath,"attack_label": attack_label,"test_count":test_count}
+    result = {"data": data, "output_filepath": output_filepath,"attack_label": attack_label,"test_count":test_count}
     return result
 
 def save_results(result):

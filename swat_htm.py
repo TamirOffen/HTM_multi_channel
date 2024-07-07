@@ -20,10 +20,13 @@ import collections
 import white_black_list
 
 parser = argparse.ArgumentParser(description='runtime configuration for HTM anomaly detection on SWAT')
-parser.add_argument('--stage_name', '-sn', metavar='STAGE_NAME', default='P1', choices=['P1', 'P2', 'P3', 'P4', 'P5', 'P6'], type=str.upper)
+parser.add_argument('--stage_name', '-sn', metavar='STAGE_NAME', default='P1',
+                    choices=['P1', 'P2', 'P3', 'P4', 'P5', 'P6'], type=str.upper)
 parser.add_argument('--channel_name', '-cn', metavar='CHANNEL_NAME')
-parser.add_argument('--channel_type', '-ctype', metavar='CHANNEL_TYPE', default=0, type=int,help='set type 0 for analog, 1 for discrete')
-parser.add_argument('--freeze_type', '-ft', default='off', choices=['off', 'during_training', 'end_training'], type=str.lower)
+parser.add_argument('--channel_type', '-ctype', metavar='CHANNEL_TYPE', default=0, type=int,
+                    help='set type 0 for analog, 1 for discrete')
+parser.add_argument('--freeze_type', '-ft', default='off', choices=['off', 'during_training', 'end_training'],
+                    type=str.lower)
 parser.add_argument('--learn_type', '-lt', default='always', choices=['always', 'train_only'], type=str.lower)
 parser.add_argument('--sdr_size', '-size', metavar='SDR_SIZE', default=1024, type=int)
 parser.add_argument('--connection_segments_gap', '-csg', default=1, type=int)
@@ -48,15 +51,16 @@ parser.add_argument('--output_file_path', default="./HTM_results/", type=str)
 parser.add_argument('--override_parameters', '-op', default="", type=str,
                     help="override parameter values, group_name,var_name,val,res/../.. ,param value = val/res")
 parser.add_argument('--replay_buffer', '-rpb', default=0, type=int)
-parser.add_argument('--encoding_type', '-et', metavar='ENCODING_TYPE', default='diff', choices=['raw', 'diff'], type=str.lower)
+parser.add_argument('--encoding_type', '-et', metavar='ENCODING_TYPE', default='diff', choices=['raw', 'diff'],
+                    type=str.lower)
 parser.add_argument('--sampling', '-sg', default=1, type=int, help="sampling interval")
 parser.add_argument('--hierarchy_enabled', '-he', default=True, action='store_true')
 parser.add_argument('--hierarchy_lvl', '-hl', default=1, type=int)
 
 default_parameters = {
     'enc': {
-        "value" :
-            {'size': 2048, 'sparsity': 0.02} #0.02
+        "value":
+            {'size': 2048, 'sparsity': 0.02}  #0.02
     },
     'predictor': {'sdrc_alpha': 0.1},
     'sp': {'boostStrength': 3.0,
@@ -72,16 +76,17 @@ default_parameters = {
            'maxSynapsesPerSegment': 256,
            'minThreshold': 3,
            'synPermConnected': 0.13999999999999999,
-            'permanenceDec': 0.001,
-            'cellNewConnectionMaxSegmentsGap': 0,
+           'permanenceDec': 0.001,
+           'cellNewConnectionMaxSegmentsGap': 0,
            'permanenceInc': 0.1},
     'anomaly': {'period': 1000},
 }
 
+
 def main(args):
     print('running ..')
 
-    file_prefix = swat_utils.get_file_prefix(args,args.channel_name)
+    file_prefix = swat_utils.get_file_prefix(args, args.channel_name)
     output_filepath = ''.join([args.output_file_path, file_prefix])
     input_filepath = ''.join([args.input_file_path, args.stage_name, '_data.csv'])
     meta_filepath = ''.join([args.input_file_path, args.stage_name, '_meta.csv'])
@@ -100,7 +105,7 @@ def main(args):
                       'window': args.window,
                       'channel_type': args.channel_type,
                       'diff_enabled': args.diff_enabled,
-                      'replay_buffer' :args.replay_buffer,
+                      'replay_buffer': args.replay_buffer,
                       'encoding_type': args.encoding_type,
                       'sum_window': args.sum_window,
                       'sum_threshold': args.sum_threshold,
@@ -116,7 +121,6 @@ def main(args):
     parameters['enc']['sparsity'] = args.sdr_sparsity
     parameters['tm']['cellNewConnectionMaxSegmentsGap'] = args.connection_segments_gap
     parameters['runtime_config'] = runtime_config
-
 
     if len(args.override_parameters) > 0:
         records_list = [item for item in args.override_parameters.split('/')]
@@ -134,7 +138,7 @@ def main(args):
                 if param_res == 1:
                     parameters[group_name][param_name] = param_val
                 else:
-                    parameters[group_name][param_name] = float(param_val)/param_res
+                    parameters[group_name][param_name] = float(param_val) / param_res
 
     config = parameters['runtime_config']
     stage = config['stage']
@@ -170,24 +174,24 @@ def main(args):
         best_window = w_arr[0]
         best_sdr = sdr_arr[0]
         min_score = 999999
-        param_perms = [(x,y) for x in sdr_arr for y in w_arr]
-        for i,(sdr,window) in enumerate(param_perms):
-                print(f'\n-----[ sdr = {sdr}, window = {window} ]-----')
-                parameters['enc']['size'] = sdr
-                parameters['runtime_config']['window'] = window
-                res = runner(input_data, parameters)
-                dtest = res["data"]["Anomaly Score"][0:training_count]
-                df = pandas.DataFrame(data = dtest)
-                scores = df.iloc[0:training_count, 0].rolling(sum_window, min_periods=1, center=False).sum()
-                thresholded_scores = swat_utils.anomaly_score(scores, sum_threshold)
-                scores_found = swat_utils.count_continuous_ones(thresholded_scores[int(training_count*0.2):])
-                print(f'\nwindow = {window} found {scores_found} sum_scores > {sum_threshold} ')
-                if (scores_found < min_score):
-                    min_score = scores_found
-                    best_window = window
-                    best_sdr = sdr
-                    if min_score == 0:
-                        break
+        param_perms = [(x, y) for x in sdr_arr for y in w_arr]
+        for i, (sdr, window) in enumerate(param_perms):
+            print(f'\n-----[ sdr = {sdr}, window = {window} ]-----')
+            parameters['enc']['size'] = sdr
+            parameters['runtime_config']['window'] = window
+            res = runner(input_data, parameters)
+            dtest = res["data"]["Anomaly Score"][0:training_count]
+            df = pandas.DataFrame(data=dtest)
+            scores = df.iloc[0:training_count, 0].rolling(sum_window, min_periods=1, center=False).sum()
+            thresholded_scores = swat_utils.anomaly_score(scores, sum_threshold)
+            scores_found = swat_utils.count_continuous_ones(thresholded_scores[int(training_count * 0.2):])
+            print(f'\nwindow = {window} found {scores_found} sum_scores > {sum_threshold} ')
+            if (scores_found < min_score):
+                min_score = scores_found
+                best_window = window
+                best_sdr = sdr
+                if min_score == 0:
+                    break
 
         print(f'best window = {best_window}, sdr = {best_sdr} with {min_score} sum_scores > {sum_threshold} ')
         if not args.window_tight:
@@ -205,7 +209,8 @@ def main(args):
         parameters['runtime_config']['window'] = best_window
         parameters['enc']['size'] = best_sdr
 
-    if parameters['runtime_config']['encoding_duration_enabled'] and parameters['runtime_config']['encoding_duration_value'] == 0:
+    if parameters['runtime_config']['encoding_duration_enabled'] and parameters['runtime_config'][
+        'encoding_duration_value'] == 0:
         print('Stage 3 - Find encodings max duration')
         print('===================================')
         training_count = input_data['training_count']
@@ -227,13 +232,19 @@ def main(args):
     parameters['runtime_config']['verbose'] = verbose
     parameters['runtime_config']['hierarchy_enabled'] = hierarchy_enabled
 
-    res = runner(input_data,parameters)
+    res = runner(input_data, parameters)
     save_results(res)
 
     return
 
 
-def runner(input_data,parameters):
+def runner(input_data, parameters):
+    """
+    Processes input data, encodes it, feeds it through HTM, and outputs anomaly scores.
+    :param input_data:
+    :param parameters:
+    :return:
+    """
     config = parameters['runtime_config']
     verbose = config['verbose']
     stage1_data = config['stage1_data']
@@ -251,8 +262,8 @@ def runner(input_data,parameters):
     sdr_size = parameters["enc"]["size"]
     sdr_sparsity = parameters["enc"]["sparsity"]
 
-    black_list = white_black_list.get_black_list()
-    white_list = white_black_list.get_white_list()
+    black_list = white_black_list.get_black_list()  # anomaly
+    white_list = white_black_list.get_white_list()  # non-anomaly
 
     hierarchy_enabled = config['hierarchy_enabled']
     hierarchy_lvl = config["hierarchy_lvl"]
@@ -280,28 +291,24 @@ def runner(input_data,parameters):
 
     v1_idx = features_info[V1PrmName]['idx']
 
+    # encoding set up
     V1EncoderParams = ScalarEncoderParameters()
-
-    V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config,features_info[V1PrmName],stage1_data)
-
+    V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config, features_info[V1PrmName], stage1_data)
     active_bits = 0
-
-    if config['channel_type'] == 0:
+    if config['channel_type'] == 0:  # continuous
         V1EncoderParams.size = sdr_size
         V1EncoderParams.sparsity = sdr_sparsity
         active_bits = int(sdr_size * sdr_sparsity)
-    else:
+    else:  # scalar
         V1EncoderParams.category = 1
-
-        active_bits = int(sdr_size/(V1EncoderParams.maximum-V1EncoderParams.minimum+1))
+        active_bits = int(sdr_size / (V1EncoderParams.maximum - V1EncoderParams.minimum + 1))
         V1EncoderParams.activeBits = active_bits
-        sdr_sparsity = float(V1EncoderParams.activeBits/sdr_size)
+        sdr_sparsity = float(V1EncoderParams.activeBits / sdr_size)
 
-    V1Encoder = ScalarEncoder(V1EncoderParams)
+    V1Encoder = ScalarEncoder(V1EncoderParams)  # encoder
 
     print(f'active bits: {active_bits}')
     print(f'encoder min: {V1EncoderParams.minimum:.4}, max: {V1EncoderParams.maximum:.4}')
-
 
     V1EncodingSize = V1Encoder.size
     total_encoding_width = V1EncodingSize
@@ -313,13 +320,14 @@ def runner(input_data,parameters):
     delay_encoding_enabled = False
     if 'delay_hist' in config.keys():
         delay_encoding_enabled = True
-        delay_bins_list = [5,8,13,21,34,55,89,144,233, 377, 610, 987, 1597, 2584, 4181, 6765, 17711, 28657]
+        delay_bins_list = [5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 17711, 28657]
         n_delay_bins_list = len(delay_bins_list)
         delay_hist = config['delay_hist']
 
         for idx, bin in enumerate(reversed(delay_hist)):
             if bin:
-                delay_bins = [delay_bins_list[n_delay_bins_list - idx + 1],delay_bins_list[n_delay_bins_list - idx + 2]]
+                delay_bins = [delay_bins_list[n_delay_bins_list - idx + 1],
+                              delay_bins_list[n_delay_bins_list - idx + 2]]
                 # delay_bins = [delay_bins_list[n_delay_bins_list - idx],delay_bins_list[n_delay_bins_list - idx + 1],delay_bins_list[n_delay_bins_list - idx + 2]]
                 # delay_bins = [delay_bins_list[n_delay_bins_list - idx + 2]]
                 break
@@ -334,13 +342,12 @@ def runner(input_data,parameters):
             encoding_rng.shuffle(random_encoding)
             encoding_map.append(random_encoding)
 
-        prev_delay_bin_idx = 0;
+        prev_delay_bin_idx = 0
         delay_bin_idx = 0
         delay_value = config["encoding_duration_value"]
         delay_encoding_width = swat_utils.get_delay_sdr_width(len(delay_bins) + 1)
 
         parameters['runtime_config']['delay_bins'] = delay_bins
-
 
     required_columns_for_prediction = [0, 1]
     # required_columns_for_prediction = [0] * (delay_encoding_width+2)
@@ -349,7 +356,7 @@ def runner(input_data,parameters):
     # for i in range(delay_encoding_width):
     #     required_columns_for_prediction[2+i] = V1EncodingSize+i
 
-    enc_info = Metrics( [total_encoding_width], 999999999 )
+    enc_info = Metrics([total_encoding_width], 999999999)
 
     # Make the HTM.  SpatialPooler & TemporalMemory & associated tools.
     activation_threshold = parameters["tm"]["activationThreshold"]
@@ -372,31 +379,31 @@ def runner(input_data,parameters):
 
     tmParams = parameters["tm"]
     tm = TemporalMemory(
-        columnDimensions          = (total_encoding_width,),
-        cellsPerColumn            = tmParams["cellsPerColumn"],
-        activationThreshold       = activation_threshold,
-        initialPermanence         = tmParams["initialPerm"],
-        connectedPermanence       = tmParams["synPermConnected"],
-        minThreshold              = tmParams["minThreshold"],
-        maxNewSynapseCount        = int(sdr_sparsity*sdr_size),
-        permanenceIncrement       = tmParams["permanenceInc"],
-        permanenceDecrement       = tmParams["permanenceDec"],
+        columnDimensions=(total_encoding_width,),
+        cellsPerColumn=tmParams["cellsPerColumn"],
+        activationThreshold=activation_threshold,
+        initialPermanence=tmParams["initialPerm"],
+        connectedPermanence=tmParams["synPermConnected"],
+        minThreshold=tmParams["minThreshold"],
+        maxNewSynapseCount=int(sdr_sparsity * sdr_size),
+        permanenceIncrement=tmParams["permanenceInc"],
+        permanenceDecrement=tmParams["permanenceDec"],
         cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
-        predictedSegmentDecrement = 0.0,
-        maxSegmentsPerCell        = tmParams["maxSegmentsPerCell"],
-        maxSynapsesPerSegment     = tmParams["maxSynapsesPerSegment"]
+        predictedSegmentDecrement=0.0,
+        maxSegmentsPerCell=tmParams["maxSegmentsPerCell"],
+        maxSynapsesPerSegment=tmParams["maxSynapsesPerSegment"]
     )
-    tm_info = Metrics([tm.numberOfCells()], 999999999 )
+    tm_info = Metrics([tm.numberOfCells()], 999999999)
 
     anomaly_history = AnomalyLikelihood(parameters["anomaly"]["period"])
 
     # Iterate through every datum in the dataset, record the inputs & outputs.
 
     N = len(records)
-    inputs = [0.0]*N
-    anomaly = [0.0]*N
-    attack_label = [0]*(N-training_count)
-    anomalyProb = [0]*N
+    inputs = [0.0] * N
+    anomaly = [0.0] * N
+    attack_label = [0] * (N - training_count)
+    anomalyProb = [0] * N
 
     attack_label_idx = features_info["Attack"]['idx']
     v1_prev_init = True
@@ -418,23 +425,21 @@ def runner(input_data,parameters):
     if window > 1:
         val_buffer = collections.deque(maxlen=window)
 
-
     tm.set_required_columns_for_prediction(required_columns_for_prediction)
 
     # ======================================================
     # ==================== main loop =======================
     # ======================================================
-    test_input = [500, 510, 520, 510, 520, 510, 520, 510, 520, 520, 520, 520, 520, 520, 520, 520, 520,520,520,520 ]
+    test_input = [500, 510, 520, 510, 520, 510, 520, 510, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520]
     test_enabled = False
     # test_enabled = True
-
 
     if verbose:
         import pprint
         pprint.pprint(parameters, indent=4)
         prm_output_filepath = ''.join([output_filepath, '_param.txt'])
         with open(prm_output_filepath, 'w') as f:
-            pprint.pprint(parameters, indent=4,stream=f)
+            pprint.pprint(parameters, indent=4, stream=f)
             pprint.pprint(f"training points count: {training_count}", indent=4, stream=f)
             pprint.pprint(f"total points count: {len(records)}", indent=4, stream=f)
             pprint.pprint(features_info, indent=4, stream=f)
@@ -455,7 +460,7 @@ def runner(input_data,parameters):
             record_val = float(record[v1_idx])
 
         if not diff_enabled:
-            record_val = keep_limits(record_val,V1EncoderParams.minimum,V1EncoderParams.maximum)
+            record_val = keep_limits(record_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
 
         # sliding window
         if window > 1:
@@ -466,11 +471,11 @@ def runner(input_data,parameters):
                 s += v
                 n += 1
 
-            window_val = s/n
+            window_val = s / n
         else:
             window_val = record_val
 
-       # diff values
+        # diff values
         if diff_enabled:
             if count == 0:
                 window_prev = window_val
@@ -490,7 +495,7 @@ def runner(input_data,parameters):
 
         # save anomaly labels for test data
         if count >= training_count:
-            attack_label[count-training_count] = int(record[attack_label_idx])
+            attack_label[count - training_count] = int(record[attack_label_idx])
             test_count += 1
 
         # Call the encoders to create bit representations for each value.  These are SDR objects.
@@ -506,7 +511,7 @@ def runner(input_data,parameters):
                 sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
                 #print(f"size: {sdr_cdt.size}, N0 {N0}, {N1}")
                 default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
-                # for rolling window keep hierarchy_current_lvl value..
+                # for rolling window keep hierarchy_current_lvl value
                 # TBD other options
                 # hierarchy_current_lvl = 1
             else:
@@ -560,7 +565,6 @@ def runner(input_data,parameters):
                 init2 = False
                 prev_default_encoding_delay = default_encoding
                 prev_val1_encoding = val1_encoding
-
 
             if prev_val1_encoding != val1_encoding:
                 run_tm = True
@@ -644,11 +648,11 @@ def runner(input_data,parameters):
     pred5 = anomaly
     # end placeholder
 
-
     data = {"Input": inputs, "1 Step Prediction": pred1, "5 Step Prediction": pred5,
             "Anomaly Score": anomaly, "Anomaly Likelihood": anomalyProb}
-    result ={"data": data, "output_filepath": output_filepath,"attack_label": attack_label,"test_count":test_count}
+    result = {"data": data, "output_filepath": output_filepath, "attack_label": attack_label, "test_count": test_count}
     return result
+
 
 def save_results(result):
     df = pandas.DataFrame(result["data"])
@@ -661,9 +665,9 @@ def save_results(result):
     return
 
 
-def profiler_stage1(input_data,var_idx):
+def profiler_stage1(input_data, var_idx):
     training_count = input_data['training_count']
-    N_profile = training_count//10
+    N_profile = training_count // 10
 
     records = input_data['records']
 
@@ -699,49 +703,47 @@ def profiler_stage1(input_data,var_idx):
         max_diff = max(max_diff, diff_val)
 
         n = n + 1
-        mean_val +=val
+        mean_val += val
         mean_diff += diff_val
 
         print_progress(count)
         if count == N_profile:
             break
 
-    mean_val = mean_val/n
-    mean_diff = mean_diff/(n-1)
+    mean_val = mean_val / n
+    mean_diff = mean_diff / (n - 1)
 
     print('\nStage1 Profiler: calc variance')
     for count, record in enumerate(records):
         val = float(record[var_idx])
-        var_val += (val - mean_val)**2
+        var_val += (val - mean_val) ** 2
 
         if count == 0:
             prev_val = val
             continue
 
         diff_val = val - prev_val
-        var_diff += (diff_val - mean_diff)**2
+        var_diff += (diff_val - mean_diff) ** 2
 
         print_progress(count)
 
         if count == N_profile:
             break
 
-    var_val = var_val/(n-1)
-    var_diff = var_diff/(n - 2)
+    var_val = var_val / (n - 1)
+    var_diff = var_diff / (n - 2)
 
     print(f'\nStage1 Profiler Done Using {N_profile} Samples')
     print(f'Min Value: {min_val:.4}, Max Value: {max_val:.4}, Mean Value: {mean_val:.4}, Var Value: {var_val:.4}')
     print(f'Min Diff: {min_diff:.4}, Max Diff: {max_diff:.4}, Mean Diff {mean_diff:.4}, Var Diff: {var_diff:.4}')
 
-
-    stage1_data = {'value' : {'min':min_val,'max':max_val,'mean':mean_val,'var':var_val},
-              'diff': {'min': min_diff, 'max': max_diff, 'mean': mean_diff, 'var': var_diff}}
+    stage1_data = {'value': {'min': min_val, 'max': max_val, 'mean': mean_val, 'var': var_val},
+                   'diff': {'min': min_diff, 'max': max_diff, 'mean': mean_diff, 'var': var_diff}}
 
     return stage1_data
 
 
-
-def profiler_stage3(input_data,parameters):
+def profiler_stage3(input_data, parameters):
     config = parameters['runtime_config']
     features_info = input_data['features']
     records = input_data['records']
@@ -753,7 +755,7 @@ def profiler_stage3(input_data,parameters):
     v1_idx = features_info[V1PrmName]['idx']
 
     V1EncoderParams = ScalarEncoderParameters()
-    V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config,features_info[V1PrmName],stage1_data)
+    V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config, features_info[V1PrmName], stage1_data)
 
     if config['channel_type'] == 0:
         V1EncoderParams.size = sdr_size
@@ -762,7 +764,7 @@ def profiler_stage3(input_data,parameters):
     else:
         V1EncoderParams.category = 1
 
-        active_bits = int(sdr_size/(V1EncoderParams.maximum-V1EncoderParams.minimum+1))
+        active_bits = int(sdr_size / (V1EncoderParams.maximum - V1EncoderParams.minimum + 1))
         V1EncoderParams.activeBits = active_bits
 
     V1Encoder = ScalarEncoder(V1EncoderParams)
@@ -770,9 +772,7 @@ def profiler_stage3(input_data,parameters):
     print(f'active bits: {active_bits}')
     print(f'encoder min: {V1EncoderParams.minimum:.4}, max: {V1EncoderParams.maximum:.4}')
 
-
-
-    delay_bins = [5,8,13,21,34,55,89,144,233, 377, 610, 987, 1597, 2584, 4181, 6765, 17711, 28657]
+    delay_bins = [5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 17711, 28657]
     delay_hist_count = 0
     prev_delay_bin_idx = 0;
     delay_hist = [0] * (len(delay_bins) + 1)
@@ -801,7 +801,7 @@ def profiler_stage3(input_data,parameters):
         record_val = float(record[v1_idx])
 
         if not diff_enabled:
-            record_val = keep_limits(record_val,V1EncoderParams.minimum,V1EncoderParams.maximum)
+            record_val = keep_limits(record_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
 
         # sliding window
         if window > 1:
@@ -812,11 +812,11 @@ def profiler_stage3(input_data,parameters):
                 s += v
                 n += 1
 
-            window_val = s/n
+            window_val = s / n
         else:
             window_val = record_val
 
-       # diff values
+        # diff values
         if diff_enabled:
             if count == 0:
                 window_prev = window_val
@@ -841,9 +841,9 @@ def profiler_stage3(input_data,parameters):
             prev_delay_bin_idx = delay_bin_idx
 
         if count < 2 or (default_encoding.getOverlap(prev_default_encoding_delay) < active_bits * 0.7):
-            max_encoding_duration = max(current_encoding_duration,max_encoding_duration)
-            delay_hist[delay_bin_idx] +=1
-            delay_hist_count +=1
+            max_encoding_duration = max(current_encoding_duration, max_encoding_duration)
+            delay_hist[delay_bin_idx] += 1
+            delay_hist_count += 1
 
             prev_default_encoding_delay = default_encoding
             current_encoding_duration = 0
@@ -851,12 +851,11 @@ def profiler_stage3(input_data,parameters):
             current_encoding_duration += 1
 
     if delay_hist_count:
-        for i,v in enumerate(delay_hist):
-            delay_hist_percent[i] = delay_hist[i]*100.0/delay_hist_count
+        for i, v in enumerate(delay_hist):
+            delay_hist_percent[i] = delay_hist[i] * 100.0 / delay_hist_count
 
-    result ={'max_encoding_duration':max_encoding_duration,'delay_hist': delay_hist_percent}
+    result = {'max_encoding_duration': max_encoding_duration, 'delay_hist': delay_hist_percent}
     return result
-
 
 
 def print_progress(count):
@@ -866,7 +865,7 @@ def print_progress(count):
         print(".", end=" ")
 
 
-def max_min_values(config, var_info,stage1_data):
+def max_min_values(config, var_info, stage1_data):
     min_val = 0
     max_val = 0
     if config['CustomMinMax'] is True:
@@ -876,21 +875,21 @@ def max_min_values(config, var_info,stage1_data):
     else:
         if config['channel_type'] == 0:
             if config['diff_enabled']:
-                addon = 0.05*(stage1_data['diff']['max']-stage1_data['diff']['min'])
+                addon = 0.05 * (stage1_data['diff']['max'] - stage1_data['diff']['min'])
                 min_val = stage1_data['diff']['min'] - addon
                 max_val = stage1_data['diff']['max'] + addon
             else:
-                addon = 0.05*(stage1_data['value']['max']-stage1_data['value']['min'])
+                addon = 0.05 * (stage1_data['value']['max'] - stage1_data['value']['min'])
                 min_val = stage1_data['value']['min'] - addon
                 max_val = stage1_data['value']['max'] + addon
         else:
             min_val = var_info['min']
             max_val = var_info['max']
 
-    return min_val,max_val
+    return min_val, max_val
 
 
-def keep_limits(val,min_val,max_val):
+def keep_limits(val, min_val, max_val):
     if val < min_val:
         val = min_val + 0.000001
 
@@ -898,6 +897,7 @@ def keep_limits(val,min_val,max_val):
         val = max_val - 0.000001
 
     return val
+
 
 if __name__ == "__main__":
     # sys.argv = ['swat_htm.py',
@@ -908,7 +908,6 @@ if __name__ == "__main__":
     #             '--verbose',
     #             '-ctype','0',
     #             '-sbp','-w','5','-size','1024','-ed_val','1']
-
 
     args = parser.parse_args()
     print(args)
