@@ -1,7 +1,7 @@
 import csv
 from htm.bindings.sdr import SDR
 import random
-
+import numpy as np
 
 def read_input(input_path, meta_path, sampling_interval):
     """
@@ -102,9 +102,12 @@ def count_continuous_ones(data):
     return found
 
 
-def calc_anomaly_stats(scores, labels, grace_time):
+def calc_anomaly_stats(scores, labels, grace_time=0):
     """
     calculates anomaly statistics, like TP, FP, TN, FN.
+    True Positives (TP): Correctly identified anomalies.
+    False Positives (FP): Incorrectly identified anomalies.
+    False Negatives (FN): Missed anomalies.
     :param scores: threshold scores (1s and 0s)
     :param labels: ground truth
     :param grace_time: length of time to allow the system to restabilize
@@ -208,7 +211,7 @@ def calc_anomaly_stats(scores, labels, grace_time):
     FP = s_false_count
     PR = precision(TP, FP)
     RE = recall(TP, FN)
-
+    print(f'TP_detected_labels = {TP_detected_labels}')
     stats = {}
     stats['TP'] = TP
     stats['FP'] = FP
@@ -331,11 +334,16 @@ def test_count_continuous_ones():
 
 
 def computeAnomalyScore(active, predicted):
+    """
+    Calculates a number from 0 to 1, indicated how much predicted matches active.
+    The higher the number, the less predicted matches active.
+    :return: 0 if predicted matches active perfectly (no anomaly). 1 if predicted contains none of the bits in active (high anomaly).
+    """
     if active.getSum() == 0:
-        return 0.0
+        return 0.0  # no anomaly
 
     both = SDR(active.dimensions)
-    both.intersection(active, predicted)
+    both.intersection(active, predicted)  # bitwise and
 
     score = (active.getSum() - both.getSum()) / active.getSum()
 
@@ -378,6 +386,13 @@ def get_delay_sdr_width(bin_size: int):
 
 
 def get_delay_bin_idx(bins, value):
+    """
+    examples:
+    let bins = [5, 10, 15]
+    if value = 7 then ret 1
+    if value = 12 then ret 2
+    if value = 20 then ret 3
+    """
     for idx, bin_val in enumerate(bins):
         if value < bin_val:
             return idx
@@ -503,6 +518,10 @@ def stable_cdt(SDRT, target_sparsity, permutation, alpha=1.1):
     :param alpha:
     :return: a single SDR with an acceptable sparsity <= target_sparsity * alpha, no. of additive and subtractive iter.
     """
+    # if sdr is already at target sparsity.
+    if (sum(SDRT) / len(SDRT)) <= target_sparsity:
+        return blist2list(SDRT), 0, 0
+
     # assume SDR is binary list
     type = 0
     if type == 1:
@@ -569,18 +588,82 @@ def encode_sequence(SDR_SEQ, permutation):
     return SDR_FINAL
 
 
+def pad_binary_list(binary_list, N):
+    """
+    Pads a binary list with False values until it reaches length N.
+    Note: len(binary_list) <= N
+    """      
+    return binary_list + [False] * (N - len(binary_list))
+
+
+#### Fast TSSE  - improves performance by 4x (empirically) ####
+import numpy as np
+
+def encode_sequence_fast(SDR_SEQ, permutation):
+    """
+    step 2 of TSSE using numpy for faster operations
+    """
+    N = len(SDR_SEQ[0])
+    # Convert to numpy array for faster operations
+    np_permutation = np.array(permutation)
+    SDR_FINAL = np.zeros(N, dtype=bool)
+    
+    for idx, sdr in enumerate(SDR_SEQ):
+        np_sdr = np.array(sdr, dtype=bool)
+        # Apply permutations
+        for i in range(idx + 1):
+            np_sdr = np_sdr[np_permutation]
+        # OR operation with numpy
+        SDR_FINAL = np.logical_or(SDR_FINAL, np_sdr)
+    
+    return SDR_FINAL.tolist()
+
+def stable_cdt_fast(SDRT, target_sparsity, permutation, alpha=1.1):
+    """
+    step 3 of TSSE using numpy for faster operations
+    """
+    N = len(SDRT)
+    np_SDRT = np.array(SDRT, dtype=bool)
+    current_sparsity = np.mean(np_SDRT)
+    
+    if current_sparsity <= target_sparsity:
+        return SDRT, 0, 0
+    
+    np_permutation = [np.array(p) for p in permutation]
+    SDR_FINAL = np.zeros(N, dtype=bool)
+    PKZ = np_SDRT.copy()
+    NK0 = NK1 = 0
+    idx_perm = 0
+    
+    # Additive phase
+    while np.mean(SDR_FINAL) < target_sparsity:
+        PKZ = PKZ[np_permutation[idx_perm]]
+        idx_perm = 1 if idx_perm == 0 else 0
+        SDR_FINAL = np.logical_or(SDR_FINAL, np.logical_and(np_SDRT, PKZ))
+        NK1 += 1
+    
+    # Subtractive phase
+    while np.mean(SDR_FINAL) > target_sparsity * alpha:
+        PKZ = PKZ[np_permutation[idx_perm]]
+        idx_perm = 1 if idx_perm == 0 else 0
+        SDR_FINAL = np.logical_and(SDR_FINAL, ~PKZ)
+        NK0 += 1
+    
+    return SDR_FINAL.tolist(), NK0, NK1
+
+
 def test_cdt():
     # SDR list:
     sdr_val = list()  # SDR.sparse
     sdr_bin_list = list()  # SDR.dense
     rng = random.Random()
-    N = 2048
-    bits = 41
+    N = 2048  # encoder size
+    bits = 41  # active bits
     rng.seed(10)
     sparsity = 0.02  # active bits = 41
-    permutation_cdt = list()
+    permutation_cdt = list()  # needs to have 2 elements
     permutation_enc = list(range(N))
-    # rng.shuffle(permutation_enc)  # without step 2
+    rng.shuffle(permutation_enc)  # without step 2
     permutation_cdt.append(list(range(N)))
     permutation_cdt.append(list(range(N)))
     rng.shuffle(permutation_cdt[0])
@@ -600,21 +683,68 @@ def test_cdt():
 
     print(f'sdr_bin_list len: {len(sdr_bin_list)}')
 
-    sdr_encoded_bin = encode_sequence(sdr_bin_list, permutation_enc)  # step 2 of TSSE
+    sdr_encoded_bin = encode_sequence_fast(sdr_bin_list, permutation_enc)  # step 2 of TSSE
+    # we are left with a single SDR, that is the OR of all the SDRs encoding + permutation
 
-    print(f'sparsity: {sum(sdr_encoded_bin) / len(sdr_encoded_bin)}')  # 0.275
+    print(f'sparsity: {sum(sdr_encoded_bin) / len(sdr_encoded_bin)}')  # 0.275, way higher than target sparsity
 
     sdr_encoded = blist2SDR(sdr_encoded_bin)
-    sdr_cdt_bin, N0, N1 = stable_cdt(sdr_encoded_bin, sparsity, permutation_cdt)
-    print(f'sparsity: {sum(sdr_cdt_bin) / len(sdr_cdt_bin)}')  # 0.0167
+    sdr_cdt_bin, N0, N1 = stable_cdt_fast(sdr_encoded_bin, sparsity, permutation_cdt)
+    print(f'sparsity: {sum(sdr_cdt_bin) / len(sdr_cdt_bin)}')  # 0.0167, 
 
     sdr_cdt = blist2SDR(sdr_cdt_bin)
 
     print(f"size: {sdr_cdt.size}, N0 {N0}, {N1}")
 
 
+def test_multi_channel_cdt():
+    sdr_val = list()
+    sdr_bin_list = list()  # TSSE buffer
+    rng = random.Random()
+    rng.seed(10)
+    N_channel1 = 8
+    N_channel2 = 16
+    N = max(N_channel1, N_channel2)
+    sparsity = (2/16)
+    permutation_cdt = list()  # needs to have 2 elements
+    permutation_enc = list(range(N))
+    rng.shuffle(permutation_enc)  # for step 2
+    permutation_cdt.append(list(range(N)))
+    permutation_cdt.append(list(range(N)))
+    rng.shuffle(permutation_cdt[0])
+    rng.shuffle(permutation_cdt[1])
+
+    sdr_val.append(SDR(N_channel1))
+    sdr_val.append(SDR(N_channel2))
+    sdr_val[0].sparse = list(range(2,4))  # encoding
+    sdr_val[1].sparse = list(range(5,8))  # encoding
+
+    sdr_bin_list.append(SDR2blist(sdr_val[0]))
+    sdr_bin_list.append(SDR2blist(sdr_val[1]))
+    print(f'sdr_bin_list: {sdr_bin_list}')
+
+    for i in range(2):  # padding
+        sdr_bin_list[i] = pad_binary_list(sdr_bin_list[i], N)
+    print(f'sdr_bin_list after padding:\n{sdr_bin_list}')
+
+    sdr_encoded_bin = encode_sequence_fast(sdr_bin_list, permutation_enc)
+    print(f'\nsdr_encoded_bin: {sdr_encoded_bin}')
+    print(f'before cdt:sparsity: {sum(sdr_encoded_bin) / len(sdr_encoded_bin)}') 
+
+    sdr_encoded = blist2SDR(sdr_encoded_bin)
+    sdr_cdt_bin, N0, N1 = stable_cdt_fast(sdr_encoded_bin, sparsity, permutation_cdt)
+    print(f'after cdt: sparsity: {sum(sdr_cdt_bin) / len(sdr_cdt_bin)}')
+
+    sdr_cdt = blist2SDR(sdr_cdt_bin)
+
+    print(f"{sdr_cdt_bin}, N0 {N0}, {N1}")
+
+
 def main():
     test_cdt()
+    print('test_cdt done\n\n')
+    test_multi_channel_cdt()
+    print('test_multi_channel_cdt done')
     # print("running..")
 
 
@@ -625,3 +755,4 @@ if __name__ == "__main__":
     # test_calc_anomaly_stats()
     #test_count_continuous_ones()
     main()
+

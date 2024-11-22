@@ -22,7 +22,7 @@ import white_black_list
 parser = argparse.ArgumentParser(description='runtime configuration for HTM anomaly detection on SWAT')
 parser.add_argument('--stage_name', '-sn', metavar='STAGE_NAME', default='P1',
                     choices=['P1', 'P2', 'P3', 'P4', 'P5', 'P6'], type=str.upper)
-parser.add_argument('--channel_name', '-cn', metavar='CHANNEL_NAME')
+parser.add_argument('--channel_name', '-cn', metavar='CHANNEL_NAME', default='LIT101')
 parser.add_argument('--channel_type', '-ctype', metavar='CHANNEL_TYPE', default=0, type=int,
                     help='set type 0 for analog, 1 for discrete')
 parser.add_argument('--freeze_type', '-ft', default='off', choices=['off', 'during_training', 'end_training'],
@@ -41,7 +41,7 @@ parser.add_argument('--custom_max', '-cmax', metavar='MAX_VAL', default=3, type=
 parser.add_argument('--sum_window', '-sw', default=120, type=int, help="moving sum anomaly score window")
 parser.add_argument('--sum_threshold', '-sth', default=0.6, type=float, help="moving sum anomaly score threshold")
 parser.add_argument('--limits_enabled', '-le', default=False, action='store_true')
-parser.add_argument('--encoding_duration_enabled', '-ede', default=True, action='store_true')
+parser.add_argument('--encoding_duration_enabled', '-ede', default=True)
 parser.add_argument('--encoding_duration_value', '-ed_val', default=0, type=int)
 parser.add_argument('--encoding_duration_bins', '-ed_bins', default=10, type=int)
 parser.add_argument('--verbose', default=False, action='store_true')
@@ -56,6 +56,8 @@ parser.add_argument('--encoding_type', '-et', metavar='ENCODING_TYPE', default='
 parser.add_argument('--sampling', '-sg', default=1, type=int, help="sampling interval")
 parser.add_argument('--hierarchy_enabled', '-he', default=True, action='store_true')
 parser.add_argument('--hierarchy_lvl', '-hl', default=1, type=int)
+# for multi-channel support:
+parser.add_argument('--stages_channels', nargs='+', type=str, default=[], help='List of stage:channel:params configurations')
 
 default_parameters = {
     'enc': {
@@ -82,14 +84,60 @@ default_parameters = {
     'anomaly': {'period': 1000},
 }
 
+def parse_stage_channel_config(config_str):
+    """
+    Parse a single stage:channel:params string into a tuple
+    Example: 'P1:LIT101:window=5,sdr_size=1024->
+            ('P1', 'LIT101', {'window': '5', 'sdr_size': '1024'})
+    """
+    stage, channel, params_str = config_str.split(':')
+    params = {}
+    if params_str:
+        for param in params_str.split(','):
+            key, value = param.split('=')
+            params[key] = value
+    return (stage, channel, params)
+
 
 def main(args):
     print('running ..')
 
+    # for multi-channel support
+    configs = [parse_stage_channel_config(config) for config in args.stages_channels]
+    is_multi_channel = len(configs) > 0
+
+    
     file_prefix = swat_utils.get_file_prefix(args, args.channel_name)
     output_filepath = ''.join([args.output_file_path, file_prefix])
     input_filepath = ''.join([args.input_file_path, args.stage_name, '_data.csv'])
     meta_filepath = ''.join([args.input_file_path, args.stage_name, '_meta.csv'])
+
+    if is_multi_channel:
+        file_prefix = []
+        for stage_name, channel_name, _ in configs:
+            args.stage_name = stage_name
+            file_prefix.append(swat_utils.get_file_prefix(args, channel_name))
+        channel_parts = []
+        for stage_name, channel_name, _ in configs:
+            channel_parts.append(f"{stage_name}_{channel_name}")
+        combined_name = "mixed_channel__" + "__".join(channel_parts)
+        output_filepath = ''.join([args.output_file_path, combined_name])
+        input_filepath = [''.join([args.input_file_path, stage_name, '_data.csv']) for stage_name,_,_ in configs]
+        meta_filepath = [''.join([args.input_file_path, stage_name, '_meta.csv']) for stage_name,_,_ in configs]
+        args.hierarchy_lvl = len(configs)
+        args.encoding_type = "raw"
+        args.encoding_duration_enabled = False
+        args.stage_name = [stage_name for stage_name,_,_ in configs]
+        args.channel_name = [channel_name for _,channel_name,_ in configs]
+        for _, _, params in configs:
+            for param_name, param_value in params.items():
+                if not hasattr(args, param_name):  
+                    print(f'Illegal param: {param_name}\nStopping Execution')
+                    return
+                if not isinstance(getattr(args, param_name), list):
+                    setattr(args, param_name, [])  
+                getattr(args, param_name).append(int(param_value))
+        args.search_best_parameters = False
 
     runtime_config = {'verbose': args.verbose,
                       'CustomMinMax': args.limits_enabled,
@@ -115,13 +163,12 @@ def main(args):
                       'hierarchy_enabled': args.hierarchy_enabled,
                       'hierarchy_lvl': args.hierarchy_lvl
                       }
-
-    parameters = default_parameters
+    parameters = default_parameters  # default params of htm
     parameters['enc']['size'] = args.sdr_size
     parameters['enc']['sparsity'] = args.sdr_sparsity
     parameters['tm']['cellNewConnectionMaxSegmentsGap'] = args.connection_segments_gap
     parameters['runtime_config'] = runtime_config
-
+    # override params of htm:
     if len(args.override_parameters) > 0:
         records_list = [item for item in args.override_parameters.split('/')]
         for record in records_list:
@@ -141,25 +188,47 @@ def main(args):
                     parameters[group_name][param_name] = float(param_val) / param_res
 
     config = parameters['runtime_config']
-    stage = config['stage']
-    input_data = swat_utils.read_input(config['input_path'], config['meta_path'], args.sampling)
-    assert stage.casefold() == input_data['stage'].casefold(), 'illegal input stage'
-    features_info = input_data['features']
-    V1PrmName = config['var_name']
-    v1_idx = features_info[V1PrmName]['idx']
+    if not is_multi_channel:
+        stage = config['stage']  # like P1 or P2 etc.
+        input_data = swat_utils.read_input(config['input_path'], config['meta_path'], args.sampling)  # dict
+        assert stage.casefold() == input_data['stage'].casefold(), 'illegal input stage'
+        features_info = input_data['features']  # channel with stats like min, max values
+        V1PrmName = config['var_name']  # channel name, like P102
+        v1_idx = features_info[V1PrmName]['idx']
 
-    print('\nrun Stage1: min/max/mean/var of training data')
-    print('==============================================')
-    stage1_data = profiler_stage1(input_data, v1_idx)
-    parameters['runtime_config']['stage1_data'] = stage1_data
-    n_records = len(input_data['records'])
+        print('\nrun Stage1: min/max/mean/var of training data')
+        print('==============================================')
+        stage1_data = profiler_stage1(input_data, v1_idx)
+        parameters['runtime_config']['stage1_data'] = stage1_data
+        n_records = len(input_data['records'])
+        hierarchy_enabled = parameters['runtime_config']['hierarchy_enabled']
+        print(f"training points count: {input_data['training_count']}")
+        print(f"total points count: {n_records}")
+
+    else:  # multi-channel
+        input_data = [swat_utils.read_input(config['input_path'][i], config['meta_path'][i], args.sampling) for i in range(len(config['input_path']))]  
+        features_info = [input_data[i]['features'] for i in range(len(input_data))]
+        n_records = [len(input_data[i]['records']) for i in range(len(input_data))]
+        V1PrmName = [config['var_name'][i] for i in range(len(config['var_name']))]
+        v1_idx = [features_info[i][V1PrmName[i]]['idx'] for i in range(len(V1PrmName))]
+        
+        print('\nrun Stage1: min/max/mean/var of training data')
+        print('==============================================')
+        stage1_data = []
+        for i in range(len(input_data)):
+            print()
+            print(f"channel: {V1PrmName[i]}")
+            stage1_data.append(profiler_stage1(input_data[i], v1_idx[i]))
+            print(f"training points count: {input_data[i]['training_count']}")
+            print(f"total points count: {n_records[i]}")
+        print()
+        parameters['runtime_config']['stage1_data'] = stage1_data
+        hierarchy_enabled = parameters['runtime_config']['hierarchy_enabled']
+
     verbose = parameters['runtime_config']['verbose']
-    hierarchy_enabled = parameters['runtime_config']['hierarchy_enabled']
 
-    print(f"training points count: {input_data['training_count']}")
-    print(f"total points count: {n_records}")
-
-    # this is relevant only for analog channels
+    # this is relevant only for analog channels (ctype = 0), floating point
+    # note: not used in multi-channel
     if args.search_best_parameters and args.channel_type == 0:
         print('Stage 2: find best parameters')
         print('=============================')
@@ -209,6 +278,7 @@ def main(args):
         parameters['runtime_config']['window'] = best_window
         parameters['enc']['size'] = best_sdr
 
+    # note: not used in multi-channel
     if parameters['runtime_config']['encoding_duration_enabled'] and parameters['runtime_config'][
         'encoding_duration_value'] == 0:
         print('Stage 3 - Find encodings max duration')
@@ -232,18 +302,16 @@ def main(args):
     parameters['runtime_config']['verbose'] = verbose
     parameters['runtime_config']['hierarchy_enabled'] = hierarchy_enabled
 
-    res = runner(input_data, parameters)
+    if is_multi_channel:         
+        input_data = combine_input_data(input_data, v1_idx)
+
+    res = runner(input_data, parameters, is_multi_channel)
     save_results(res)
 
-    return
 
-
-def runner(input_data, parameters):
+def runner(input_data, parameters, is_multi_channel=False):
     """
-    Processes input data, encodes it, feeds it through HTM, and outputs anomaly scores.
-    :param input_data:
-    :param parameters:
-    :return:
+    Processes input data, encodes it, feeds it through HTM, and outputs anomaly scores
     """
     config = parameters['runtime_config']
     verbose = config['verbose']
@@ -252,6 +320,8 @@ def runner(input_data, parameters):
     freeze_trained_network = config['freeze_configuration'] == "end_training"
     freeze_during_training = config['freeze_configuration'] == "during_training"
     output_filepath = config['output_path']
+    if is_multi_channel:
+        attack_labels = input_data['attack_labels']
 
     channel_type = config['channel_type']
 
@@ -262,61 +332,96 @@ def runner(input_data, parameters):
     sdr_size = parameters["enc"]["size"]
     sdr_sparsity = parameters["enc"]["sparsity"]
 
+    if is_multi_channel:
+        Num_sdr = max([s for s in sdr_size])  # max sdr size of all channels
+    else:
+        Num_sdr = sdr_size  # single channel
+
     black_list = white_black_list.get_black_list()  # anomaly
     white_list = white_black_list.get_white_list()  # non-anomaly
 
     hierarchy_enabled = config['hierarchy_enabled']
-    hierarchy_lvl = config["hierarchy_lvl"]
+    hierarchy_lvl = config["hierarchy_lvl"]  # in multi-channel, this is the number of channels
     hierarchy_current_lvl = 1
     hierarchy_rng = random.Random()
     hierarchy_rng.seed(10)
-    permutation_enc = list(range(sdr_size))
-    hierarchy_rng.shuffle(permutation_enc)
+    permutation_enc = list(range(Num_sdr))  # [0,...,sdr_size-1]
+    hierarchy_rng.shuffle(permutation_enc)  # shuffle([0,...,sdr_size-1])
     permutation_cdt = list()
-    permutation_cdt.append(list(range(sdr_size)))
-    permutation_cdt.append(list(range(sdr_size)))
+    permutation_cdt.append(list(range(Num_sdr)))
+    permutation_cdt.append(list(range(Num_sdr)))  # [[0,...,sdr_size-1],[0,...,sdr_size-1]]
     hierarchy_rng.shuffle(permutation_cdt[0])
-    hierarchy_rng.shuffle(permutation_cdt[1])
+    hierarchy_rng.shuffle(permutation_cdt[1])  # [shuffle([0,...,sdr_size-1]), shuffle([0,...,sdr_size-1])]
     hierarchy_sdr_buffer = collections.deque(maxlen=hierarchy_lvl)
 
-    V1PrmName = config['var_name']
+    V1PrmName = config['var_name']  # channel name/s
     var_white_list = []
     var_black_list = []
-    if V1PrmName in white_list.keys():
-        var_white_list = white_list[V1PrmName]
-        print(f'white list {var_white_list}')
-    if V1PrmName in black_list.keys():
-        var_black_list = black_list[V1PrmName]
-        print(f'black list {var_black_list}')
+    if not is_multi_channel:
+        if V1PrmName in white_list.keys():
+            var_white_list = white_list[V1PrmName]
+            print(f'white list {var_white_list}')
+        if V1PrmName in black_list.keys():
+            var_black_list = black_list[V1PrmName]
+            print(f'black list {var_black_list}')
 
-    v1_idx = features_info[V1PrmName]['idx']
+    if is_multi_channel:
+        v1_idx = [features_info[i][V1PrmName[i]]['idx'] for i in range(len(V1PrmName))]
+    else:
+        v1_idx = features_info[V1PrmName]['idx']
 
     # encoding set up
-    V1EncoderParams = ScalarEncoderParameters()
-    V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config, features_info[V1PrmName], stage1_data)
+    if not is_multi_channel:    
+        V1EncoderParams = ScalarEncoderParameters()
+        V1EncoderParams.minimum, V1EncoderParams.maximum = max_min_values(config, features_info[V1PrmName], stage1_data)
+    else:  # multi-channel
+        V1EncoderParams = [ScalarEncoderParameters() for i in range(len(V1PrmName))]  # separate encoder for each channel
+        for i in range(len(V1PrmName)):
+            V1EncoderParams[i].minimum, V1EncoderParams[i].maximum = max_min_values(config, features_info[i][V1PrmName[i]], stage1_data[i])
+
     active_bits = 0
     if config['channel_type'] == 0:  # continuous
-        V1EncoderParams.size = sdr_size
-        V1EncoderParams.sparsity = sdr_sparsity
-        active_bits = int(sdr_size * sdr_sparsity)
+        if not is_multi_channel:
+            V1EncoderParams.size = sdr_size
+            V1EncoderParams.sparsity = sdr_sparsity
+            active_bits = int(sdr_size * sdr_sparsity)
+        else:  # multi-channel
+            active_bits = []
+            for i in range(len(V1PrmName)):
+                V1EncoderParams[i].size = sdr_size[i]
+                V1EncoderParams[i].sparsity = sdr_sparsity
+                active_bits.append(int(sdr_size[i] * sdr_sparsity))
     else:  # scalar
         V1EncoderParams.category = 1
         active_bits = int(sdr_size / (V1EncoderParams.maximum - V1EncoderParams.minimum + 1))
         V1EncoderParams.activeBits = active_bits
         sdr_sparsity = float(V1EncoderParams.activeBits / sdr_size)
 
-    V1Encoder = ScalarEncoder(V1EncoderParams)  # encoder
+    if not is_multi_channel:
+        V1Encoder = ScalarEncoder(V1EncoderParams)  # encoder
+        print(f'active bits: {active_bits}')
+        print(f'encoder min: {V1EncoderParams.minimum:.4}, max: {V1EncoderParams.maximum:.4}')
+        print()
+    else:  # multi-channel
+        V1Encoder = [ScalarEncoder(V1EncoderParams[i]) for i in range(len(V1PrmName))]  # separate encoder for each channel
+        for i in range(len(V1PrmName)):
+            print(f'channel {V1PrmName[i]} encoder parameters:')
+            print(f'active bits: {active_bits[i]}')
+            print(f'encoder min: {V1EncoderParams[i].minimum:.4}, max: {V1EncoderParams[i].maximum:.4}')
+            print()
 
-    print(f'active bits: {active_bits}')
-    print(f'encoder min: {V1EncoderParams.minimum:.4}, max: {V1EncoderParams.maximum:.4}')
-
-    V1EncodingSize = V1Encoder.size
-    total_encoding_width = V1EncodingSize
-    encoding_map = []
     encoding_map_idx = 0
-    default_encoding = list(range(total_encoding_width))
-    encoding_map.append(default_encoding)
+    if not is_multi_channel:
+        V1EncodingSize = V1Encoder.size
+        total_encoding_width = V1EncodingSize
+        encoding_map = []
+        default_encoding = list(range(total_encoding_width))
+        encoding_map.append(default_encoding)
+    else:  # multi-channel
+        V1EncodingSize = [V1Encoder[i].size for i in range(len(V1PrmName))]
+        total_encoding_width = Num_sdr
 
+    # not used in multi-channel
     delay_encoding_enabled = False
     if 'delay_hist' in config.keys():
         delay_encoding_enabled = True
@@ -332,7 +437,6 @@ def runner(input_data, parameters):
                 # delay_bins = [delay_bins_list[n_delay_bins_list - idx + 2]]
                 break
 
-        print(f'delay bins {delay_bins}')
         # delay_bins = [987]
         #delay_bins = [5,8,13,21,34,55,89,144,233]
         encoding_rng = random.Random()
@@ -349,18 +453,21 @@ def runner(input_data, parameters):
 
         parameters['runtime_config']['delay_bins'] = delay_bins
 
-    required_columns_for_prediction = [0, 1]
+    required_columns_for_prediction = [0, 1]  # TODO maybe change for multi-channel
     # required_columns_for_prediction = [0] * (delay_encoding_width+2)
     # required_columns_for_prediction[0] = swat_utils.get_delay_active_columns_num(delay_encoding_width)
     # required_columns_for_prediction[1] = active_bits+1
     # for i in range(delay_encoding_width):
     #     required_columns_for_prediction[2+i] = V1EncodingSize+i
 
-    enc_info = Metrics([total_encoding_width], 999999999)
+    if not is_multi_channel:
+        enc_info = Metrics([total_encoding_width], 999999999)
+    else:  # multi-channel
+        enc_info = Metrics([Num_sdr], 999999999)
 
-    # Make the HTM.  SpatialPooler & TemporalMemory & associated tools.
+    # Make the HTM and TemporalMemory & associated tools.
     activation_threshold = parameters["tm"]["activationThreshold"]
-
+    
     # spParams = parameters["sp"]
     # sp = SpatialPooler(
     #     inputDimensions            = (encodingWidth,),
@@ -385,7 +492,7 @@ def runner(input_data, parameters):
         initialPermanence=tmParams["initialPerm"],
         connectedPermanence=tmParams["synPermConnected"],
         minThreshold=tmParams["minThreshold"],
-        maxNewSynapseCount=int(sdr_sparsity * sdr_size),
+        maxNewSynapseCount=int(sdr_sparsity * Num_sdr),
         permanenceIncrement=tmParams["permanenceInc"],
         permanenceDecrement=tmParams["permanenceDec"],
         cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
@@ -399,19 +506,28 @@ def runner(input_data, parameters):
 
     # Iterate through every datum in the dataset, record the inputs & outputs.
 
-    N = len(records)
+    N = len(records) if not is_multi_channel else len(records)//len(V1PrmName)
     inputs = [0.0] * N
     anomaly = [0.0] * N
     attack_label = [0] * (N - training_count)
     anomalyProb = [0] * N
 
-    attack_label_idx = features_info["Attack"]['idx']
-    v1_prev_init = True
-    v1_prev = 0
-    window_prev = 0
-    prev_val1_encoding = 0
-    test_count = 0
-    window = config["window"]
+    if not is_multi_channel:
+        attack_label_idx = features_info["Attack"]['idx']
+        v1_prev_init = True
+        v1_prev = 0
+        window_prev = 0
+        prev_val1_encoding = 0
+        test_count = 0
+        window = config["window"]
+    else:  # multi-channel
+        attack_label_idx = [features_info[i]["Attack"]['idx'] for i in range(len(V1PrmName))]
+        v1_prev_init = [True] * len(V1PrmName)
+        v1_prev = [0] * len(V1PrmName)
+        window_prev = [0] * len(V1PrmName)
+        prev_val1_encoding = [0] * len(V1PrmName)
+        test_count = 0
+        window = config["window"]
     diff_enabled = config['diff_enabled']
     replay_buffer = config['replay_buffer']
     encoding_type = config['encoding_type']
@@ -422,8 +538,11 @@ def runner(input_data, parameters):
     if replay_buffer:
         sdr_rbuffer = collections.deque(maxlen=replay_buffer)
 
-    if window > 1:
-        val_buffer = collections.deque(maxlen=window)
+    if not is_multi_channel:
+        if window > 1:
+            val_buffer = collections.deque(maxlen=window)
+    else:  # multi-channel
+        val_buffer = [collections.deque(maxlen=window[i]) for i in range(len(V1PrmName))]
 
     tm.set_required_columns_for_prediction(required_columns_for_prediction)
 
@@ -433,6 +552,7 @@ def runner(input_data, parameters):
     test_input = [500, 510, 520, 510, 520, 510, 520, 510, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520, 520]
     test_enabled = False
     # test_enabled = True
+    # max_records_to_run = len(test_input)
 
     if verbose:
         import pprint
@@ -448,72 +568,112 @@ def runner(input_data, parameters):
             fj.write(json.dumps(parameters))
 
     init2 = True
+    curr_channel = 0  # used in multi-channel to select the correct channel
 
+    # max_records_to_run = 100_000  # TODO remove
     for count, record in enumerate(records):
+        if count % 100_000 == 0:
+            print(f'count: {count}')    
+
         if count == max_records_to_run:
             break
+        
+        if is_multi_channel:
+            curr_channel = count % len(V1PrmName)
 
-        # get value and truncate to min/max
+        # get value from record specific to the channel
         if test_enabled and count < len(test_input):
+            # test is from above
             record_val = float(test_input[count])
         else:
-            record_val = float(record[v1_idx])
-
+            if not is_multi_channel:
+                record_val = float(record[v1_idx])
+            else:
+                record_val = float(record)
+        
+        # truncate to min/max TODO are enc.min/max from the train set?
         if not diff_enabled:
-            record_val = keep_limits(record_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
+            if not is_multi_channel:
+                record_val = keep_limits(record_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
+            else:
+                record_val = keep_limits(record_val, V1EncoderParams[curr_channel].minimum, V1EncoderParams[curr_channel].maximum)
+        
+        # sliding window of values
+        if not is_multi_channel:
+            if window > 1:
+                val_buffer.append(record_val)
+                n = 0.0
+                s = 0.0
+                for v in val_buffer:
+                    s += v
+                    n += 1
 
-        # sliding window
-        if window > 1:
-            val_buffer.append(record_val)
+                window_val = s / n  # avg value in val_buffer
+            else:
+                window_val = record_val
+        else:  # multi-channel
+            val_buffer[curr_channel].append(record_val)
             n = 0.0
             s = 0.0
-            for v in val_buffer:
+            for v in val_buffer[curr_channel]:
                 s += v
                 n += 1
-
-            window_val = s / n
-        else:
-            window_val = record_val
+            window_val = s / n  # avg value in val_buffer
 
         # diff values
-        if diff_enabled:
+        if diff_enabled:  # derivative of continuous channel
             if count == 0:
                 window_prev = window_val
                 continue
             v1_val = window_val - window_prev
             v1_val = keep_limits(v1_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
-        else:
+        else:  # continuous channel value
             v1_val = window_val
-
         window_prev = window_val
 
         if v1_prev_init:
             v1_prev_init = False
             v1_prev = v1_val
 
-        inputs[count] = v1_val
+        if not is_multi_channel:
+            inputs[count] = v1_val  
+        # TODO maybe needed for multi-channel
 
         # save anomaly labels for test data
-        if count >= training_count:
-            attack_label[count - training_count] = int(record[attack_label_idx])
-            test_count += 1
+        if not is_multi_channel:
+            if count >= training_count:
+                attack_label[count - training_count] = int(record[attack_label_idx])
+                test_count += 1
+        else:  # multi-channel
+            if count//len(V1PrmName) >= training_count:
+                # assuming all channels should have the same attack labels for a given time point
+                if curr_channel == 0:  # Only save on first channel's iteration
+                    attack_label[count//len(V1PrmName) - training_count] = attack_labels[count//len(V1PrmName)]
+                    test_count += 1
 
-        # Call the encoders to create bit representations for each value.  These are SDR objects.
+        # call the encoders to create bit representations for each value. these are SDR objects.
 
+        # discrete channel values or dAk or Ak with buffer size of 1
         if channel_type == 1 or hierarchy_enabled == False or hierarchy_lvl == 1:
             default_encoding = V1Encoder.encode(v1_val)
+        # Ak with buffer size > 1 or multi-channel
         else:
-            hierarchy_sdr_buffer.append(swat_utils.SDR2blist(V1Encoder.encode(v1_val)))
+            if not is_multi_channel:    
+                hierarchy_sdr_buffer.append(swat_utils.SDR2blist(V1Encoder.encode(v1_val)))
+            else:  # multi-channel
+                hierarchy_sdr_buffer.append(swat_utils.pad_binary_list(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)), Num_sdr))
 
             if hierarchy_current_lvl == hierarchy_lvl:
-                sdr_encoded_bin = swat_utils.encode_sequence(list(hierarchy_sdr_buffer), permutation_enc)
+                sdr_encoded_bin = swat_utils.encode_sequence_fast(list(hierarchy_sdr_buffer), permutation_enc)
                 #sdr_encoded = swat_utils.blist2SDR(sdr_encoded_bin)
-                sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
-                #print(f"size: {sdr_cdt.size}, N0 {N0}, {N1}")
+                sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt_fast(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
+                # print(f"size: {sdr_cdt.size}, N0 {N0}, {N1}")
                 default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
                 # for rolling window keep hierarchy_current_lvl value
                 # TBD other options
-                # hierarchy_current_lvl = 1
+                if is_multi_channel:
+                    hierarchy_current_lvl = 1 
+                    hierarchy_sdr_buffer.clear()
             else:
                 hierarchy_current_lvl = hierarchy_current_lvl + 1
                 continue
@@ -555,12 +715,12 @@ def runner(input_data, parameters):
                 if v1_prev == vv[0] and v1_val == vv[1]:
                     val_is_black = True
                     break
-
+        
         run_tm = False
         if encoding_type == 'raw':
             run_tm = True
         if encoding_type == 'diff':
-            if init2 == True:
+            if init2:
                 run_tm = True
                 init2 = False
                 prev_default_encoding_delay = default_encoding
@@ -601,16 +761,22 @@ def runner(input_data, parameters):
                 anomaly[count] = 0.0
                 anomalyProb[count] = 0.0
             else:
-                # anomaly[count] = tm.anomaly
+                # anomaly[count] = tm.anomaly  
                 predicted = tm.getPredictedColumns()
-                anomaly[count] = swat_utils.computeAnomalyScore(encoding, predicted)
-                # assert math.fabs(score - tm.anomaly) < 0.0000001, "anomaly calculation wrong"
-                anomalyProb[count] = anomaly_history.compute(anomaly[count])
+                # print(f'predicted: {predicted}')
+                if not is_multi_channel:
+                    anomaly[count] = swat_utils.computeAnomalyScore(encoding, predicted)
+                    # assert math.fabs(score - tm.anomaly) < 0.0000001, "anomaly calculation wrong"
+                    anomalyProb[count] = anomaly_history.compute(anomaly[count])
+                else:  # multi-channel: only gets here after TSSE / hierarchy_buffer is full
+                    anomaly[count // len(V1PrmName)] = swat_utils.computeAnomalyScore(encoding, predicted)
+                    anomalyProb[count // len(V1PrmName)] = anomaly_history.compute(anomaly[count // len(V1PrmName)])
 
             if replay_buffer and tm.anomaly:
                 for replay_enc in sdr_rbuffer:
                     tm.compute(replay_enc, learn=False, permanent=False)
         else:
+            # no anomaly occurred
             anomaly[count] = 0.0
             anomalyProb[count] = 0.0
 
@@ -656,13 +822,13 @@ def runner(input_data, parameters):
 
 def save_results(result):
     df = pandas.DataFrame(result["data"])
-    htm_output_filepath = ''.join([result["output_filepath"], '_res.csv']);
+    htm_output_filepath = ''.join([result["output_filepath"], '_res.csv'])
+    print(f'htm_output_filepath: {htm_output_filepath}')
     df.to_csv(htm_output_filepath, sep=',', index=False)
-    attack_label_output_filepath = ''.join([result["output_filepath"], '_attack.real']);
+    attack_label_output_filepath = ''.join([result["output_filepath"], '_attack.real'])
+    print(f'attack_label_output_filepath: {attack_label_output_filepath}')
     swat_utils.save_list(result["attack_label"], attack_label_output_filepath)
     print(f'test_count: {result["test_count"]}, len: {len(result["attack_label"])}')
-
-    return
 
 
 def profiler_stage1(input_data, var_idx):
@@ -774,7 +940,7 @@ def profiler_stage3(input_data, parameters):
 
     delay_bins = [5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 17711, 28657]
     delay_hist_count = 0
-    prev_delay_bin_idx = 0;
+    prev_delay_bin_idx = 0
     delay_hist = [0] * (len(delay_bins) + 1)
     delay_hist_percent = [0] * (len(delay_bins) + 1)
 
@@ -890,6 +1056,7 @@ def max_min_values(config, var_info, stage1_data):
 
 
 def keep_limits(val, min_val, max_val):
+    # force val to be in (min_val, max_val) if outside this range
     if val < min_val:
         val = min_val + 0.000001
 
@@ -898,6 +1065,38 @@ def keep_limits(val, min_val, max_val):
 
     return val
 
+
+def combine_input_data(channel_data_list, indexes):
+    """
+    Combines input data from multiple channels into a single input data.
+    Args:
+        channel_data_list: List of input data dictionaries, one per channel
+        indexes: List of indexes for each channel
+    Returns:
+        combined_input_data: dict containing combined data
+    """
+    combined_records = []
+    attack_labels = []  # attack label is the same for all channels
+    attack_label_idx = channel_data_list[0]["features"]["Attack"]["idx"]
+    for i in range(len(channel_data_list[0]['records'])):  # number of records
+        attack_labels.append(channel_data_list[0]["records"][i][attack_label_idx])
+        for j in range(len(channel_data_list)):  # number of channels
+            combined_records.append(channel_data_list[j]['records'][i][indexes[j]])
+    
+    combined_meta = [channel_data_list[i]['meta'] for i in range(len(channel_data_list))]
+    combined_features = [channel_data_list[i]['features'] for i in range(len(channel_data_list))]
+    combined_stage = [channel_data_list[i]['stage'] for i in range(len(channel_data_list))]
+    combined_training_count = [channel_data_list[i]['training_count'] for i in range(len(channel_data_list))]
+
+    combined_input_data = {
+        'stage': combined_stage,
+        'features': combined_features,
+        'records': combined_records,
+        'training_count': combined_training_count[0],
+        'meta': combined_meta,
+        'attack_labels': attack_labels
+    }
+    return combined_input_data
 
 if __name__ == "__main__":
     # sys.argv = ['swat_htm.py',
