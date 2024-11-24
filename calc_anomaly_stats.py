@@ -364,6 +364,7 @@ def open_file_for_update(filename, workbook, new_sheet_name):
     # run through the sheets and store sheets in workbook
     # this still doesn't write to the file yet
     for sheet in sheets:  # write data from old file
+        # print(f'sheet.name = {sheet.name}')
         if sheet.name == new_sheet_name:  #skip copy of sheet we will add
             continue
         newSheet = workbook.add_worksheet(sheet.name)
@@ -420,9 +421,6 @@ def main(args):
 
     is_multi_channel = len(args.stages_channels) > 0
 
-    if is_multi_channel:
-        args.excel_filename += '_multi_channel'
-
     if args.final_stage:
         final_stage(json_filename)
         return
@@ -437,6 +435,14 @@ def main(args):
         else:  # multi-channel
             channels_list, channels_filenames_list = parse_stages_channels(args)
             # channels_list includes both stage and channel names
+        
+        if is_multi_channel:
+            args.excel_sheet_name = ""
+            for config in args.stages_channels:
+                _, channel = config.split(':')
+                args.excel_sheet_name += channel + "__"
+            args.excel_sheet_name = args.excel_sheet_name[:-2]
+            args.stage_name = args.excel_sheet_name
 
         first = True
         stats = {}
@@ -453,6 +459,7 @@ def main(args):
             stats[channel_name] = get_channel_stats(args, channel_name, file_prefix, label_prefix, is_multi_channel)
             channel_stats[channel_name] = stats[channel_name][channel_name]
             print(f'{channel_name}:{stats[channel_name][channel_name]["detected_labels"]}\n')
+        
         
         save_to_csv(args.excel_filename, stats, is_multi_channel)
         stats[args.stage_name] = {args.stage_name: unify_stats(channel_stats, args.grace_time)}
