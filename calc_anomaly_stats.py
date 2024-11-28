@@ -290,6 +290,8 @@ def save_to_excel(filename, stats):
     workbook = xlsxwriter.Workbook(filename)
     if exists(filename):
         open_file_for_update(filename, workbook, args.excel_sheet_name)
+    if len(args.excel_sheet_name) > 31:
+        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
     worksheet = workbook.add_worksheet(args.excel_sheet_name)
     format_head = workbook.add_format({'align': 'center'})
     format_cells = workbook.add_format({'align': 'center'})
