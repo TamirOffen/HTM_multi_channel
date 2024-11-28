@@ -211,7 +211,7 @@ def calc_anomaly_stats(scores, labels, grace_time=0):
     FP = s_false_count
     PR = precision(TP, FP)
     RE = recall(TP, FN)
-    print(f'TP_detected_labels = {TP_detected_labels}')
+    # print(f'TP_detected_labels = {TP_detected_labels}')
     stats = {}
     stats['TP'] = TP
     stats['FP'] = FP
@@ -506,6 +506,14 @@ def blist2SDR(x):
     res = SDR(len(x))
     res.sparse = [i for i, val in enumerate(x) if x[i]]
 
+    return res
+
+def blist2SDR_fast(x):
+    res = SDR(len(x))
+    if isinstance(x, np.ndarray):
+        res.sparse = np.nonzero(x)[0].tolist()
+    else:
+        res.sparse = np.where(x)[0].tolist()
     return res
 
 

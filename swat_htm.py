@@ -58,6 +58,7 @@ parser.add_argument('--hierarchy_enabled', '-he', default=True, action='store_tr
 parser.add_argument('--hierarchy_lvl', '-hl', default=1, type=int)
 # for multi-channel support:
 parser.add_argument('--stages_channels', nargs='+', type=str, default=[], help='List of stage:channel:params configurations')
+parser.add_argument('--MC_encoder_type', choices=['TSSE', 'concat', 'hybrid'], default='TSSE')
 
 default_parameters = {
     'enc': {
@@ -100,7 +101,7 @@ def parse_stage_channel_config(config_str):
 
 
 def main(args):
-    print('running ..')
+    print('running ...')
 
     # for multi-channel support
     configs = [parse_stage_channel_config(config) for config in args.stages_channels]
@@ -332,8 +333,27 @@ def runner(input_data, parameters, is_multi_channel=False):
     sdr_size = parameters["enc"]["size"]
     sdr_sparsity = parameters["enc"]["sparsity"]
 
+    if args.MC_encoder_type == 'concat':
+        # need to adjust sdr_sparsity for each channel so that they have the same number of active bits
+        max_sdr_size = max(sdr_size)
+        target_active_bits = int(max_sdr_size * 0.02)  # no. of active bits we want for all channels
+        
+        # adjusted sparsity for each channel
+        sdr_sparsity = [target_active_bits / size for size in sdr_size]
+        print(f'adjusted sdr_sparsity: {sdr_sparsity}')
+
+        # Verify all channels will have same number of active bits
+        # active_bits = [int(sdr_size[i] * sdr_sparsity[i]) for i in range(len(sdr_size))]
+        # print(f'adjusted active_bits: {active_bits}')
+        # return
+
     if is_multi_channel:
-        Num_sdr = max([s for s in sdr_size])  # max sdr size of all channels
+        if args.MC_encoder_type == 'TSSE':
+            Num_sdr = max([s for s in sdr_size])  # max sdr size of all channels
+        elif args.MC_encoder_type == 'concat':
+            Num_sdr = sum(sdr_size)  # sum of sdr sizes of all channels
+        else:  # TODO: hybrid
+            pass
     else:
         Num_sdr = sdr_size  # single channel
 
@@ -379,6 +399,7 @@ def runner(input_data, parameters, is_multi_channel=False):
         for i in range(len(V1PrmName)):
             V1EncoderParams[i].minimum, V1EncoderParams[i].maximum = max_min_values(config, features_info[i][V1PrmName[i]], stage1_data[i])
 
+    # TODO: something here needs to change for multi-channel
     active_bits = 0
     if config['channel_type'] == 0:  # continuous
         if not is_multi_channel:
@@ -389,8 +410,14 @@ def runner(input_data, parameters, is_multi_channel=False):
             active_bits = []
             for i in range(len(V1PrmName)):
                 V1EncoderParams[i].size = sdr_size[i]
-                V1EncoderParams[i].sparsity = sdr_sparsity
-                active_bits.append(int(sdr_size[i] * sdr_sparsity))
+                if args.MC_encoder_type == 'TSSE':
+                    V1EncoderParams[i].sparsity = sdr_sparsity
+                    active_bits.append(int(sdr_size[i] * sdr_sparsity))
+                elif args.MC_encoder_type == 'concat':
+                    V1EncoderParams[i].sparsity = sdr_sparsity[i]
+                    active_bits.append(int(sdr_size[i] * sdr_sparsity[i]))
+                else:  # TODO: hybrid
+                    pass
     else:  # scalar
         V1EncoderParams.category = 1
         active_bits = int(sdr_size / (V1EncoderParams.maximum - V1EncoderParams.minimum + 1))
@@ -483,7 +510,16 @@ def runner(input_data, parameters, is_multi_channel=False):
     #     wrapAround                 = True
     # )
     # sp_info = Metrics( sp.getColumnDimensions(), 999999999 )
-
+    total_active_bits = 0
+    if args.MC_encoder_type == 'TSSE':
+        total_active_bits = int(sdr_sparsity * Num_sdr)
+    elif args.MC_encoder_type == 'concat':  
+        for i in range(len(V1PrmName)):
+            total_active_bits += sdr_sparsity[i] * sdr_size[i]
+        total_active_bits = int(total_active_bits)
+    else:  # TODO: hybrid
+        pass
+    
     tmParams = parameters["tm"]
     tm = TemporalMemory(
         columnDimensions=(total_encoding_width,),
@@ -492,7 +528,7 @@ def runner(input_data, parameters, is_multi_channel=False):
         initialPermanence=tmParams["initialPerm"],
         connectedPermanence=tmParams["synPermConnected"],
         minThreshold=tmParams["minThreshold"],
-        maxNewSynapseCount=int(sdr_sparsity * Num_sdr),
+        maxNewSynapseCount=total_active_bits,
         permanenceIncrement=tmParams["permanenceInc"],
         permanenceDecrement=tmParams["permanenceDec"],
         cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
@@ -653,24 +689,37 @@ def runner(input_data, parameters, is_multi_channel=False):
 
         # call the encoders to create bit representations for each value. these are SDR objects.
 
-        # discrete channel values or dAk or Ak with buffer size of 1
+        # discrete channel values or dAk or Ak with hier buffer size of 1
         if channel_type == 1 or hierarchy_enabled == False or hierarchy_lvl == 1:
             default_encoding = V1Encoder.encode(v1_val)
-        # Ak with buffer size > 1 or multi-channel
+        # Ak with hier buffer size > 1 or multi-channel
         else:
             if not is_multi_channel:    
                 hierarchy_sdr_buffer.append(swat_utils.SDR2blist(V1Encoder.encode(v1_val)))
             else:  # multi-channel
-                hierarchy_sdr_buffer.append(swat_utils.pad_binary_list(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)), Num_sdr))
+                if args.MC_encoder_type == 'TSSE':
+                    hierarchy_sdr_buffer.append(swat_utils.pad_binary_list(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)), Num_sdr))
+                elif args.MC_encoder_type == 'concat':
+                    hierarchy_sdr_buffer.append(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)))
+                else:  # TODO: hybrid
+                    pass
 
             if hierarchy_current_lvl == hierarchy_lvl:
-                sdr_encoded_bin = swat_utils.encode_sequence_fast(list(hierarchy_sdr_buffer), permutation_enc)
-                #sdr_encoded = swat_utils.blist2SDR(sdr_encoded_bin)
-                sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt_fast(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
-                # print(f"size: {sdr_cdt.size}, N0 {N0}, {N1}")
-                default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
-                # for rolling window keep hierarchy_current_lvl value
-                # TBD other options
+                if args.MC_encoder_type == 'TSSE':
+                    sdr_encoded_bin = swat_utils.encode_sequence_fast(list(hierarchy_sdr_buffer), permutation_enc)
+                    sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt_fast(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
+                    default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
+                elif args.MC_encoder_type == 'concat':
+                    # default_encoding = []
+                    # for i in range(len(V1PrmName)):
+                    #     # concat all the SDRs
+                    #     default_encoding.extend(hierarchy_sdr_buffer[i])
+                    # default_encoding = swat_utils.blist2SDR(default_encoding)
+                    default_encoding_bin = np.concatenate(hierarchy_sdr_buffer)
+                    default_encoding = swat_utils.blist2SDR_fast(default_encoding_bin)
+                else:  # TODO: hybrid
+                    pass
+
                 if is_multi_channel:
                     hierarchy_current_lvl = 1 
                     hierarchy_sdr_buffer.clear()
@@ -783,7 +832,8 @@ def runner(input_data, parameters, is_multi_channel=False):
         prev_val1_encoding = val1_encoding
         v1_prev = v1_val
 
-        print_progress(count)
+        if not is_multi_channel:
+            print_progress(count)
 
     if verbose:
         # Print information & statistics about the state of the HTM.
