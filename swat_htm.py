@@ -58,8 +58,9 @@ parser.add_argument('--hierarchy_enabled', '-he', default=True, action='store_tr
 parser.add_argument('--hierarchy_lvl', '-hl', default=1, type=int)
 # for multi-channel support:
 parser.add_argument('--stages_channels', nargs='+', type=str, default=[], help='List of stage:channel:params configurations')
-parser.add_argument('--MC_encoder_type', choices=['TSSE', 'concat', 'temporal'], default='TSSE')
+parser.add_argument('--MC_encoder_type', choices=['TSSE', 'spatial', 'temporal', 'combined'], default='TSSE')
 parser.add_argument('--temporal_buffer_size', default=0, type=int)
+parser.add_argument('--combined_weights', default=[0.7, 0.3], type=float, nargs=2)  # spatial;temporal. only used for combined.
 
 default_parameters = {
     'enc': {
@@ -86,6 +87,7 @@ default_parameters = {
     'anomaly': {'period': 1000},
 }
 
+
 def parse_stage_channel_config(config_str):
     """
     Parse a single stage:channel:params string into a tuple
@@ -107,7 +109,6 @@ def main(args):
     # for multi-channel support
     configs = [parse_stage_channel_config(config) for config in args.stages_channels]
     is_multi_channel = len(configs) > 0
-
     
     file_prefix = swat_utils.get_file_prefix(args, args.channel_name)
     output_filepath = ''.join([args.output_file_path, file_prefix])
@@ -164,7 +165,9 @@ def main(args):
                       'sampling_interval': args.sampling,
                       'hierarchy_enabled': args.hierarchy_enabled,
                       'hierarchy_lvl': args.hierarchy_lvl,
-                      'temporal_buffer_size': args.temporal_buffer_size
+                      'temporal_buffer_size': args.temporal_buffer_size,
+                      'spatial_weight': args.combined_weights[0],
+                      'temporal_weight': args.combined_weights[1]
                       }
     parameters = default_parameters  # default params of htm
     parameters['enc']['size'] = args.sdr_size
@@ -231,7 +234,6 @@ def main(args):
     verbose = parameters['runtime_config']['verbose']
 
     # this is relevant only for analog channels (ctype = 0), floating point
-    # note: not used in multi-channel
     if args.search_best_parameters and args.channel_type == 0:
         print('Stage 2: find best parameters')
         print('=============================')
@@ -280,6 +282,8 @@ def main(args):
 
         parameters['runtime_config']['window'] = best_window
         parameters['enc']['size'] = best_sdr
+
+
 
     # note: not used in multi-channel
     if parameters['runtime_config']['encoding_duration_enabled'] and parameters['runtime_config'][
@@ -335,7 +339,7 @@ def runner(input_data, parameters, is_multi_channel=False):
     sdr_size = parameters["enc"]["size"]
     sdr_sparsity = parameters["enc"]["sparsity"]
 
-    if args.MC_encoder_type == 'concat' or args.MC_encoder_type == 'temporal':
+    if args.MC_encoder_type == 'spatial' or args.MC_encoder_type == 'temporal' or args.MC_encoder_type == 'combined':
         # need to adjust sdr_sparsity for each channel so that they have the same number of active bits
         max_sdr_size = max(sdr_size)
         target_active_bits = int(max_sdr_size * 0.02)  # no. of active bits we want for all channels
@@ -346,7 +350,7 @@ def runner(input_data, parameters, is_multi_channel=False):
     if is_multi_channel:
         if args.MC_encoder_type == 'TSSE':
             Num_sdr = max([s for s in sdr_size])  # max sdr size of all channels
-        else:  # concat or temporal
+        else:  # spatial or temporal or combined
             Num_sdr = sum(sdr_size)  # sum of sdr sizes of all channels
     else:
         Num_sdr = sdr_size  # single channel
@@ -368,7 +372,7 @@ def runner(input_data, parameters, is_multi_channel=False):
     hierarchy_rng.shuffle(permutation_cdt[1])  # [shuffle([0,...,sdr_size-1]), shuffle([0,...,sdr_size-1])]
     hierarchy_sdr_buffer = collections.deque(maxlen=hierarchy_lvl)
 
-    if args.MC_encoder_type == 'temporal':
+    if args.MC_encoder_type == 'temporal' or args.MC_encoder_type == 'combined':
         temporal_buffer_size = config['temporal_buffer_size']
         temporal_sdr_buffer = collections.deque(maxlen=temporal_buffer_size)
         temporal_current_lvl = 1
@@ -411,7 +415,7 @@ def runner(input_data, parameters, is_multi_channel=False):
                 if args.MC_encoder_type == 'TSSE':
                     V1EncoderParams[i].sparsity = sdr_sparsity
                     active_bits.append(int(sdr_size[i] * sdr_sparsity))
-                else:  # concat or temporal
+                else:  # spatial or temporal
                     V1EncoderParams[i].sparsity = sdr_sparsity[i]
                     active_bits.append(int(sdr_size[i] * sdr_sparsity[i]))
     else:  # scalar
@@ -486,8 +490,9 @@ def runner(input_data, parameters, is_multi_channel=False):
     if not is_multi_channel:
         enc_info = Metrics([total_encoding_width], 999999999)
     else:  # multi-channel
-        enc_info = Metrics([Num_sdr], 999999999)
-
+        if not args.MC_encoder_type == 'combined': 
+            enc_info = Metrics([Num_sdr], 999999999)
+    
     # Make the HTM and TemporalMemory & associated tools.
     activation_threshold = parameters["tm"]["activationThreshold"]
     
@@ -509,33 +514,68 @@ def runner(input_data, parameters, is_multi_channel=False):
     total_active_bits = 0
     if args.MC_encoder_type == 'TSSE':
         total_active_bits = int(sdr_sparsity * Num_sdr)
-    else:  # concat or temporal
+    else:  # spatial or temporal
         for i in range(len(V1PrmName)):
             total_active_bits += sdr_sparsity[i] * sdr_size[i]
         total_active_bits = int(total_active_bits)
     
     tmParams = parameters["tm"]
-    tm = TemporalMemory(
-        columnDimensions=(total_encoding_width,),
-        cellsPerColumn=tmParams["cellsPerColumn"],
-        activationThreshold=activation_threshold,
-        initialPermanence=tmParams["initialPerm"],
-        connectedPermanence=tmParams["synPermConnected"],
-        minThreshold=tmParams["minThreshold"],
-        maxNewSynapseCount=total_active_bits,
-        permanenceIncrement=tmParams["permanenceInc"],
-        permanenceDecrement=tmParams["permanenceDec"],
-        cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
-        predictedSegmentDecrement=0.0,
-        maxSegmentsPerCell=tmParams["maxSegmentsPerCell"],
-        maxSynapsesPerSegment=tmParams["maxSynapsesPerSegment"]
-    )
-    tm_info = Metrics([tm.numberOfCells()], 999999999)
+    if not args.MC_encoder_type == 'combined':
+        tm = TemporalMemory(
+            columnDimensions=(total_encoding_width,),
+            cellsPerColumn=tmParams["cellsPerColumn"],
+            activationThreshold=activation_threshold,
+            initialPermanence=tmParams["initialPerm"],
+            connectedPermanence=tmParams["synPermConnected"],
+            minThreshold=tmParams["minThreshold"],
+            maxNewSynapseCount=total_active_bits,
+            permanenceIncrement=tmParams["permanenceInc"],
+            permanenceDecrement=tmParams["permanenceDec"],
+            cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
+            predictedSegmentDecrement=0.0,
+            maxSegmentsPerCell=tmParams["maxSegmentsPerCell"],
+            maxSynapsesPerSegment=tmParams["maxSynapsesPerSegment"]
+        )
+        tm_info = Metrics([tm.numberOfCells()], 999999999)
+        anomaly_history = AnomalyLikelihood(parameters["anomaly"]["period"])
+    else:  # combined
+        spatial_tm = TemporalMemory(
+            columnDimensions=(total_encoding_width,),
+            cellsPerColumn=tmParams["cellsPerColumn"],
+            activationThreshold=activation_threshold,
+            initialPermanence=tmParams["initialPerm"],
+            connectedPermanence=tmParams["synPermConnected"],
+            minThreshold=tmParams["minThreshold"],
+            maxNewSynapseCount=total_active_bits,
+            permanenceIncrement=tmParams["permanenceInc"],
+            permanenceDecrement=tmParams["permanenceDec"],
+            cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
+            predictedSegmentDecrement=0.0,
+            maxSegmentsPerCell=tmParams["maxSegmentsPerCell"],
+            maxSynapsesPerSegment=tmParams["maxSynapsesPerSegment"]
+        )
+        tm_info = Metrics([spatial_tm.numberOfCells()], 999999999)  # TODO might need for spatial and temporal
+        # spatial_anomaly_history = AnomalyLikelihood(parameters["anomaly"]["period"])
 
-    anomaly_history = AnomalyLikelihood(parameters["anomaly"]["period"])
+        temporal_tm = TemporalMemory(
+            columnDimensions=(total_encoding_width,),
+            cellsPerColumn=tmParams["cellsPerColumn"],
+            activationThreshold=activation_threshold,
+            initialPermanence=tmParams["initialPerm"],
+            connectedPermanence=tmParams["synPermConnected"],
+            minThreshold=tmParams["minThreshold"],
+            maxNewSynapseCount=total_active_bits,
+            permanenceIncrement=tmParams["permanenceInc"],
+            permanenceDecrement=tmParams["permanenceDec"],
+            cellNewConnectionMaxSegmentsGap=tmParams["cellNewConnectionMaxSegmentsGap"],
+            predictedSegmentDecrement=0.0,
+            maxSegmentsPerCell=tmParams["maxSegmentsPerCell"],
+            maxSynapsesPerSegment=tmParams["maxSynapsesPerSegment"]
+        )
+        #tm_info = Metrics([temporal_tm.numberOfCells()], 999999999)  # TODO might need for spatial and temporal
+        anomaly_history = AnomalyLikelihood(parameters["anomaly"]["period"])
 
     # Iterate through every datum in the dataset, record the inputs & outputs.
-
     N = len(records) if not is_multi_channel else len(records)//len(V1PrmName)
     inputs = [0.0] * N
     anomaly = [0.0] * N
@@ -574,7 +614,11 @@ def runner(input_data, parameters, is_multi_channel=False):
     else:  # multi-channel
         val_buffer = [collections.deque(maxlen=window[i]) for i in range(len(V1PrmName))]
 
-    tm.set_required_columns_for_prediction(required_columns_for_prediction)  # TODO read about this
+    if not args.MC_encoder_type == 'combined':
+        tm.set_required_columns_for_prediction(required_columns_for_prediction)  # TODO read about this
+    else:  # combined
+        spatial_tm.set_required_columns_for_prediction(required_columns_for_prediction)
+        temporal_tm.set_required_columns_for_prediction(required_columns_for_prediction)
 
     # ======================================================
     # ==================== main loop =======================
@@ -623,7 +667,7 @@ def runner(input_data, parameters, is_multi_channel=False):
         if not diff_enabled:
             if not is_multi_channel:
                 record_val = keep_limits(record_val, V1EncoderParams.minimum, V1EncoderParams.maximum)
-            else:
+            else:  # multi-channel
                 record_val = keep_limits(record_val, V1EncoderParams[curr_channel].minimum, V1EncoderParams[curr_channel].maximum)
         
         # sliding window of values
@@ -691,7 +735,7 @@ def runner(input_data, parameters, is_multi_channel=False):
             else:  # multi-channel
                 if args.MC_encoder_type == 'TSSE':
                     hierarchy_sdr_buffer.append(swat_utils.pad_binary_list(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)), Num_sdr))
-                else:  # concat or temporal
+                else:  # spatial or temporal
                     hierarchy_sdr_buffer.append(swat_utils.SDR2blist(V1Encoder[curr_channel].encode(v1_val)))
 
             if hierarchy_current_lvl == hierarchy_lvl:
@@ -699,9 +743,9 @@ def runner(input_data, parameters, is_multi_channel=False):
                     sdr_encoded_bin = swat_utils.encode_sequence_fast(list(hierarchy_sdr_buffer), permutation_enc)
                     sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt_fast(sdr_encoded_bin, sdr_sparsity, permutation_cdt)
                     default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
-                else:  # concat or temporal
+                else:  # spatial or temporal or combined
                     default_encoding_bin = np.concatenate(hierarchy_sdr_buffer)
-                    default_encoding = swat_utils.blist2SDR_fast(default_encoding_bin)
+                    default_encoding_spatial = swat_utils.blist2SDR_fast(default_encoding_bin)  # concat. encoding (spatial)
 
                 if is_multi_channel:
                     hierarchy_current_lvl = 1 
@@ -710,13 +754,13 @@ def runner(input_data, parameters, is_multi_channel=False):
                 hierarchy_current_lvl = hierarchy_current_lvl + 1
                 continue
 
-            if args.MC_encoder_type == 'temporal':
+            if args.MC_encoder_type == 'temporal' or args.MC_encoder_type == 'combined':
                 temporal_sdr_buffer.append(default_encoding_bin)
                 if temporal_current_lvl == temporal_buffer_size:
                     sdr_encoded_bin = swat_utils.encode_sequence_fast(list(temporal_sdr_buffer), permutation_enc)
                     # want sparsity of 0.02
                     sdr_cdt_bin, N0, N1 = swat_utils.stable_cdt_fast(sdr_encoded_bin, 0.02, permutation_cdt)
-                    default_encoding = swat_utils.blist2SDR(sdr_cdt_bin)
+                    default_encoding_temporal = swat_utils.blist2SDR(sdr_cdt_bin)  # temporal encoding
                 else:
                     temporal_current_lvl = temporal_current_lvl + 1
                     continue
@@ -726,7 +770,14 @@ def runner(input_data, parameters, is_multi_channel=False):
             val1_encoding = SDR(total_encoding_width)
             val1_encoding.sparse = [encoding_map[encoding_map_idx][i] for i in default_encoding.sparse]
         else:
-            val1_encoding = default_encoding
+            if args.MC_encoder_type == 'spatial':
+                val1_encoding = default_encoding_spatial
+            elif args.MC_encoder_type == 'temporal':
+                val1_encoding = default_encoding_temporal
+            elif args.MC_encoder_type == 'combined':
+                val1_encoding = [default_encoding_spatial, default_encoding_temporal]
+            else:
+                val1_encoding = default_encoding
 
         # add SDR to replay buffer
         if replay_buffer:
@@ -786,15 +837,31 @@ def runner(input_data, parameters, is_multi_channel=False):
 
         if run_tm:
             encoding = val1_encoding
+            if args.MC_encoder_type == 'combined':
+                encoding_spatial = val1_encoding[0]
+                encoding_temporal = val1_encoding[1]
 
-            enc_info.addData(encoding)
+            if not args.MC_encoder_type == 'combined':
+                enc_info.addData(encoding)
+            
             if val_is_black:
                 tm.compute(encoding, learn=False, permanent=False)
             else:
-                tm.compute(encoding, learn=learn, permanent=permanent)
+                if not args.MC_encoder_type == 'combined':
+                    tm.compute(encoding, learn=learn, permanent=permanent)
+                else:  # combined
+                    spatial_tm.compute(encoding_spatial, learn=learn, permanent=permanent)
+                    temporal_tm.compute(encoding_temporal, learn=learn, permanent=permanent)
 
-            tm_active_cells = tm.getActiveCells()
-            tm_info.addData(tm_active_cells.flatten())
+            if not args.MC_encoder_type == 'combined':
+                tm_active_cells = tm.getActiveCells()
+                tm_info.addData(tm_active_cells.flatten())
+            else:  # combined
+                tm_active_cells_spatial = spatial_tm.getActiveCells()
+                tm_active_cells_temporal = temporal_tm.getActiveCells()
+                tm_info.addData(tm_active_cells_spatial.flatten())
+                tm_info.addData(tm_active_cells_temporal.flatten())
+
             if val_is_black:
                 print(f'black list: prev_val = {v1_prev}, curr_val = {v1_val}')
                 anomaly[count] = 1.0
@@ -805,15 +872,25 @@ def runner(input_data, parameters, is_multi_channel=False):
                 anomalyProb[count] = 0.0
             else:
                 # anomaly[count] = tm.anomaly  
-                predicted = tm.getPredictedColumns()
+                if not args.MC_encoder_type == 'combined':
+                    predicted = tm.getPredictedColumns()
+                else:  # combined
+                    predicted_spatial = spatial_tm.getPredictedColumns()
+                    predicted_temporal = temporal_tm.getPredictedColumns()
                 # print(f'predicted: {predicted}')
                 if not is_multi_channel:
                     anomaly[count] = swat_utils.computeAnomalyScore(encoding, predicted)
                     # assert math.fabs(score - tm.anomaly) < 0.0000001, "anomaly calculation wrong"
                     anomalyProb[count] = anomaly_history.compute(anomaly[count])
                 else:  # multi-channel: only gets here after TSSE / hierarchy_buffer is full
-                    anomaly[count // len(V1PrmName)] = swat_utils.computeAnomalyScore(encoding, predicted)
-                    anomalyProb[count // len(V1PrmName)] = anomaly_history.compute(anomaly[count // len(V1PrmName)])
+                    if not args.MC_encoder_type == 'combined':
+                        anomaly[count // len(V1PrmName)] = swat_utils.computeAnomalyScore(encoding, predicted)
+                        anomalyProb[count // len(V1PrmName)] = anomaly_history.compute(anomaly[count // len(V1PrmName)])
+                    else:  # combined
+                        spatial_anomaly = swat_utils.computeAnomalyScore(encoding_spatial, predicted_spatial)
+                        temporal_anomaly = swat_utils.computeAnomalyScore(encoding_temporal, predicted_temporal)
+                        anomaly[count // len(V1PrmName)] = spatial_anomaly * config['spatial_weight'] + temporal_anomaly * config['temporal_weight']
+                        anomalyProb[count // len(V1PrmName)] = anomaly_history.compute(anomaly[count // len(V1PrmName)])
 
             if replay_buffer and tm.anomaly:
                 for replay_enc in sdr_rbuffer:
