@@ -9,6 +9,7 @@ import math
 import pandas
 import swat_utils
 from enum import Enum
+import itertools
 
 from htm.bindings.sdr import SDR, Metrics
 from htm.encoders.scalar_encoder import ScalarEncoder, ScalarEncoderParameters
@@ -140,7 +141,7 @@ def main(args):
                 if not isinstance(getattr(args, param_name), list):
                     setattr(args, param_name, [])  
                 getattr(args, param_name).append(int(param_value))
-        args.search_best_parameters = False
+        # args.search_best_parameters = False
 
     runtime_config = {'verbose': args.verbose,
                       'CustomMinMax': args.limits_enabled,
@@ -234,7 +235,8 @@ def main(args):
     verbose = parameters['runtime_config']['verbose']
 
     # this is relevant only for analog channels (ctype = 0), floating point
-    if args.search_best_parameters and args.channel_type == 0:
+    # for single channel only
+    if args.search_best_parameters and args.channel_type == 0 and not is_multi_channel:
         print('Stage 2: find best parameters')
         print('=============================')
         w_arr = [1, 3, 5, 8, 13, 21, 34]
@@ -259,6 +261,7 @@ def main(args):
             scores = df.iloc[0:training_count, 0].rolling(sum_window, min_periods=1, center=False).sum()
             thresholded_scores = swat_utils.anomaly_score(scores, sum_threshold)
             scores_found = swat_utils.count_continuous_ones(thresholded_scores[int(training_count * 0.2):])
+            # want to find the best window and sdr that minimizes the number of scores above the threshold
             print(f'\nwindow = {window} found {scores_found} sum_scores > {sum_threshold} ')
             if (scores_found < min_score):
                 min_score = scores_found
@@ -282,8 +285,40 @@ def main(args):
 
         parameters['runtime_config']['window'] = best_window
         parameters['enc']['size'] = best_sdr
-
-
+    
+    # for multi-channel, only try to find the best sdr size per channel. window is input from the user.
+    if is_multi_channel and args.search_best_parameters:
+        print('Stage 2: find best parameters')
+        print('=============================')
+        num_channels = len(input_data)
+        sdr_arr = [512, 1024, 2048]
+        windows = parameters['runtime_config']['window']
+        training_count = input_data[0]['training_count']
+        parameters['runtime_config']['max_records_to_run'] = training_count * num_channels
+        sum_window = parameters['runtime_config']['sum_window']
+        sum_threshold = parameters['runtime_config']['sum_threshold']
+        best_sdr_combination = [sdr_arr[0]] * num_channels
+        min_score = 999999
+        param_perms = [list(perm) for perm in itertools.product(sdr_arr, repeat=num_channels)]
+        print(f'number of combinations: {len(param_perms)}')
+        combined_input_data = combine_input_data(input_data, v1_idx)
+        for i, sdr_combination in enumerate(param_perms):
+            print(f'-----[ sdr_size per channel = {sdr_combination} ]-----\n')
+            parameters['enc']['size'] = sdr_combination
+            res = runner(combined_input_data, parameters, is_multi_channel)
+            dtest = res["data"]["Anomaly Score"][0:training_count]
+            df = pandas.DataFrame(data=dtest)
+            scores = df.iloc[0:training_count, 0].rolling(sum_window, min_periods=1, center=False).sum()
+            thresholded_scores = swat_utils.anomaly_score(scores, sum_threshold)
+            scores_found = swat_utils.count_continuous_ones(thresholded_scores[int(training_count * 0.2):])
+            print(f'window = {windows} found {scores_found} sum_scores > {sum_threshold} ')
+            if scores_found < min_score:
+                min_score = scores_found
+                best_sdr_combination = sdr_combination
+                if min_score == 0:
+                    break
+        print(f'best sdr_size per channel: {best_sdr_combination}')
+        parameters['enc']['size'] = best_sdr_combination
 
     # note: not used in multi-channel
     if parameters['runtime_config']['encoding_duration_enabled'] and parameters['runtime_config'][
@@ -305,7 +340,8 @@ def main(args):
 
     print('Final Stage')
     print('===========')
-    parameters['runtime_config']['max_records_to_run'] = n_records
+    parameters['runtime_config']['max_records_to_run'] = n_records[0] * len(input_data)
+    print(f'max_records_to_run: {parameters["runtime_config"]["max_records_to_run"]}')
     parameters['runtime_config']['verbose'] = verbose
     parameters['runtime_config']['hierarchy_enabled'] = hierarchy_enabled
 
@@ -646,8 +682,9 @@ def runner(input_data, parameters, is_multi_channel=False):
 
     for count, record in enumerate(records):
         if count % 100_000 == 0:
-            print(f'count: {count:,} / {len(records):,}')    
-        
+            # print(f'count: {count:,} / {len(records):,}')   
+            print(f'count: {count:,} / {max_records_to_run:,}')
+
         if count == max_records_to_run:
             break
         
