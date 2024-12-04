@@ -1,34 +1,35 @@
-# HTM Model for Anomaly Detection on SWaT Dataset
+# HTM Model for Anomaly Detection: Multi-Channel Encoding Strategies on SWaT Dataset
 
 ## Overview
-We explore the use of TSSE for encoding multivariate contextual patterns by combining SDRs from different channels. The approach:
-1. Derives extra features from combinations of continuous channel values in Layer 1
-2. Encodes these combinations using TSSE
-3. Feeds each combination as a new feature into Layer 2
+This project explores various multi-channel encoding strategies for anomaly detection using HTM model on the Secure Water Treatment (SWaT) dataset. We explore different approaches to effectively encode multiple sensor channels while trying to minimize FPs and maximize TPs.
 
-## Example:
-The following example demonstrates combining LIT101 (water tank level) and AIT202 (water quality) sensors.
+## Encoding Strategies
 
-#### Step 1: Encode Channel Combinations
-```bash
-python swat_htm.py --stages_channels ^
-    P1:LIT101:window=5,sdr_size=1024 ^
-    P2:AIT202:window=34,sdr_size=2048
-```
+### 1. Timestamp TSSE
+- For every timestamp: encodes each channel's value using channel specific encoders and applies TSSE to combine encodings into a unified multi-channel representation.
+- Note: for channels with different sdr sizes, we pad the shorter encoding with zeros to match the length of the longest encoding. This can cause larger channels to dominate the shorter ones.
 
-#### Step 2: Calculate Anomaly Statistics
-```bash
-python calc_anomaly_stats.py -sn MC -esn MC --stages_channels ^
-    P1:LIT101 ^
-    P2:AIT202
-```
+### 2. Spatial Encoding
+- For every timestamp: encodes each channel's value using channel specific encoders and concatenates individual encodings into a single spatial representation.
+- Note: maintains consistent active bit count across all channel encoders
 
-#### Results
-- Successfully detected anomalies: #1, #6, and #21
-- Notable finding: Anomaly #6 was undetectable using individual channels (LIT101 or AIT202) but was caught using the combined approach.
+### 3. Temporal Encoding
+**Parameters:**
+- `buffer_size`: Number of timesteps to consider
 
-## TODO
-Explore additional channel combinations:
-- Within-stage combinations (P1,...,P6)
-- Cross-stage sensor relationships
-- Focus on channels with intuitive physical relationships
+**Process:**
+- Maintains a buffer of spatial encodings over time and applies TSSE to the buffer to get a temporal encoding.
+
+### 4. Combined Approach
+**Parameters:**
+- `buffer_size`: Number of timesteps to consider
+- `spatial_weight`: Weight for spatial anomaly score (0-1)
+- `temporal_weight`: Weight for temporal anomaly score (0-1)
+
+**Process:**
+- Generates both spatial and temporal encodings per timestamp
+- Processes each encoding through separate TMs
+- Combines anomaly scores using weighted average:
+  ```
+  final_score = spatial_weight * spatial_score + temporal_weight * temporal_score
+  ```
