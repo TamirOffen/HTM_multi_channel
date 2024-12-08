@@ -15,12 +15,16 @@ This project explores various multi-channel encoding strategies for anomaly dete
 - For every timestamp: encodes each channel's value using channel specific encoders and concatenates individual encodings into a single spatial representation.
 - Note: maintains consistent active bit count across all channel encoders
 
+![Spatial Encoding](spatial.png)
+
 ### 3. Temporal Encoding
 **Parameters:**
 - `buffer_size`: Number of timesteps to consider
 
 **Process:**
 - Maintains a buffer of spatial encodings over time and applies TSSE to the buffer to get a temporal encoding.
+
+![Temporal Encoding](temporal.png)
 
 ### 4. Combined Approach
 **Parameters:**
@@ -35,3 +39,5 @@ This project explores various multi-channel encoding strategies for anomaly dete
   ```
   final_score = spatial_weight * spatial_score + temporal_weight * temporal_score
   ```
+
+![Combined Approach](combined.png)
