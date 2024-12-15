@@ -42,6 +42,9 @@ parser.add_argument('--final_stage', default=False, action='store_true')
 
 # for multi-channel support:
 parser.add_argument('--stages_channels', nargs='+', type=str, default=[], help='List of stage:channel:params configurations')
+parser.add_argument('--MC_encoder_type', choices=['TSSE', 'spatial', 'temporal', 'combined'], default='TSSE')
+parser.add_argument('--temporal_buffer_size', default=0, type=int)  # used for temporal and combined
+parser.add_argument('--combined_weights', default=[0.0, 0.0], type=float, nargs=2)  # spatial;temporal. only used for combined.
 
 
 
@@ -116,8 +119,8 @@ def unify_stats(stats, grace_time):
     # TP_detection_delay = unify_detection_delay_list(l_count, stats)
     TP_detection_delay = []
 
-    TP = len(TP_detected_labels)
-    FN = l_count - TP
+    TP = min(32, len(set(TP_detected_labels)))
+    FN = max(0, l_count - TP)
     PR = swat_utils.precision(TP, FP)
     RE = swat_utils.recall(TP, FN)
 
@@ -128,7 +131,7 @@ def unify_stats(stats, grace_time):
     stats['PR'] = PR
     stats['RE'] = RE
     stats['F1'] = swat_utils.F1(PR, RE)
-    stats['detected_labels'] = list(TP_detected_labels)
+    stats['detected_labels'] = list(set(TP_detected_labels))
     stats['detection_delay'] = TP_detection_delay
     stats['fp_array'] = FP_arr
     stats['LabelsCount'] = l_count
@@ -174,19 +177,17 @@ def get_channel_stats(args, channel_name, input_prefix, label_prefix, is_multi_c
     prm_filepath = ''.join([args.output_file_path, input_prefix, '_param.json'])
     # print(f'input file path: {input_filepath}')
     # print(f'label file path: {label_filepath}')
-    # print(f'prm file path: {prm_filepath}')
+    print(f'prm file path: {prm_filepath}')
 
     print("read HTM results data..")
     dl = pd.read_csv(label_filepath, header=None)  # test set ground truth labels
     df = pd.read_csv(input_filepath)
     # print(df.head())
 
-    if not is_multi_channel:
-        with open(prm_filepath) as f:
-            params = json.loads(f.read())
-        print(f'params = {params}')
-    else:  # multi-channel
-        params = {}
+    with open(prm_filepath) as f:
+        params = json.loads(f.read())
+    # print(f'params = {params}')
+    
     
     training_count = df.shape[0] - dl.shape[0]
     # print(f'calc training {training_count}, argument {args.training_count}')
@@ -225,7 +226,18 @@ def get_channel_stats(args, channel_name, input_prefix, label_prefix, is_multi_c
     stats[channel_name] = stats['sum']
  
     if not is_multi_channel:
-        add_params_info(stats, params)  # TODO update for multi-channel
+        add_params_info(stats, params) 
+    else:
+        for key in stats.keys():
+            sdr_sizes = params['enc']['size']
+            channel_names = params['runtime_config']['var_name']
+            # print(f'{channel_names=}')
+            for (channel_name, sdr_size) in zip(channel_names, sdr_sizes):
+                stats[key][f'{channel_name}_sdr_size'] = sdr_size
+            stats[key]['MC_encoder_type'] = args.MC_encoder_type
+            stats[key]['temporal_buffer_size'] = args.temporal_buffer_size
+            stats[key]['spatial_weight'] = args.combined_weights[0]
+            stats[key]['temporal_weight'] = args.combined_weights[1]
 
     # max_stats = {}
     # max_key = get_key_with_max_F1(stats)
@@ -244,14 +256,16 @@ def get_channel_stats(args, channel_name, input_prefix, label_prefix, is_multi_c
 
 def write_stats_to_excel(worksheet, raw, stats, format):
     for idx, (key, value) in enumerate(stats.items()):
+        # print(f'idx: {idx}')
+        # print(f'key: {key}')
+        # print(f'value: {value}')
+        # print()
         if type(value) is list:
             val = str(value)
             worksheet.write(raw, idx + 1, val, format)
             worksheet.set_column(idx + 1, idx + 1, len(val))
         else:
             worksheet.write(raw, idx + 1, value, format)
-
-    return
 
 
 def save_to_csv(filename, stats, is_multi_channel=False):
@@ -263,6 +277,8 @@ def save_to_csv(filename, stats, is_multi_channel=False):
         fp_data[key] = [s[key]['TP'], s[key]['FP']]
         if not is_multi_channel:  # TODO update for multi-channel
             params_data[key] = [s[key]['window'], s[key]['sdr_size']]
+        else:  # multi-channel
+            params_data[key] = [args.MC_encoder_type, args.temporal_buffer_size, args.combined_weights[0], args.combined_weights[1]]
         tmp = [0] * LABELS_NUM
         labels = s[key]['detected_labels']
         for idx in labels:
@@ -285,7 +301,7 @@ def save_to_csv(filename, stats, is_multi_channel=False):
     return
 
 
-def save_to_excel(filename, stats):
+def save_to_excel_single_channel(filename, stats):
     filename = f'{filename}{args.output_filename_addon}.xlsx'
     workbook = xlsxwriter.Workbook(filename)
     if exists(filename):
@@ -313,7 +329,73 @@ def save_to_excel(filename, stats):
 
     workbook.close()
 
-    return
+
+def save_to_excel_multi_channel(filename, stats):
+    filename = f'{filename}{args.output_filename_addon}.xlsx'
+    workbook = xlsxwriter.Workbook(filename)
+    starting_row = 1
+
+    if exists(filename):
+        # Read existing workbook
+        xlrd.xlsx.ensure_elementtree_imported(False, None)
+        xlrd.xlsx.Element_has_iter = True
+        wbRD = xlrd.open_workbook(filename)
+        
+        # If the sheet exists, get its row count and copy its contents
+        if args.excel_sheet_name in wbRD.sheet_names():
+            existing_sheet = wbRD.sheet_by_name(args.excel_sheet_name)
+            starting_row = existing_sheet.nrows
+            starting_row += 1  # want one line of space between existing sheet and new sheet
+            worksheet = workbook.add_worksheet(args.excel_sheet_name)
+            
+            # Copy existing content
+            format_cells = workbook.add_format({'align': 'center'})
+            for row in range(existing_sheet.nrows):
+                for col in range(existing_sheet.ncols):
+                    value = existing_sheet.cell(row, col).value
+                    worksheet.write(row, col, value, format_cells)
+                    if row == 0:  # For header row, adjust column width
+                        worksheet.set_column(col, col, max(8, len(str(value)) + 1))
+        else:
+            worksheet = workbook.add_worksheet(args.excel_sheet_name)
+
+    else:
+        worksheet = workbook.add_worksheet(args.excel_sheet_name)
+
+    # Make it as wide as the longest channel name
+    max_channel_name_length = max(len(channel_name) for _, s in stats.items() 
+                                for channel_name in s.keys() if channel_name != args.stage_name)
+    print(f'{max_channel_name_length=}')
+    worksheet.set_column(0, 0, max(20, max_channel_name_length + 2))  # +2 for padding
+
+
+    if len(args.excel_sheet_name) > 31:
+        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
+
+    # worksheet = workbook.add_worksheet(args.excel_sheet_name)
+    format_head = workbook.add_format({'align': 'center'})
+    format_cells = workbook.add_format({'align': 'center'})
+
+    first = True
+    idx_channel = starting_row #1
+    for _, (_, s) in enumerate(stats.items()):
+        # print(f'{s=}')
+        
+        for (channel_name, channel) in s.items():
+            if channel_name == args.stage_name:
+                continue
+            worksheet.write(idx_channel, 0, channel_name, format_head)
+            write_stats_to_excel(worksheet, idx_channel, channel, format_cells)
+            idx_channel += 1
+            # headings
+            if idx_channel == 2 and first:
+                first = False
+                worksheet.set_column(0, 0, 8)
+                for idx, key in enumerate(channel):
+                    worksheet.write(0, idx + 1, key, format_head)
+                    worksheet.set_column(idx + 1, idx + 1, max(8, len(key) + 1))
+
+    workbook.close()
 
 
 def save_final_to_excel(filename, stats):
@@ -379,8 +461,6 @@ def open_file_for_update(filename, workbook, new_sheet_name):
                 elif type(v) is str and v != "":
                     newSheet.set_column(col, col, max(8, len(v) + 1))
 
-    return
-
 
 def get_channel_filenames(args, channels_list):
     # args_tmp = copy.deepcopy(args)
@@ -407,6 +487,7 @@ def get_channel_filenames(args, channels_list):
     run_file.close()
     return channel_filenames_list
 
+
 def parse_stages_channels(args):
     channels = ""
     channels_filename = "mixed_channel"
@@ -415,7 +496,9 @@ def parse_stages_channels(args):
         channels += stage + "_" + channel + "__"
         channels_filename += "__" + stage + "_" + channel  # multi-channel format
     channels = channels[:-2]  # remove the last "__"
+    channels_filename += f'__{args.MC_encoder_type}__{args.temporal_buffer_size}__{int(args.combined_weights[0]*100)}__{int(args.combined_weights[1]*100)}'
     return [channels], [channels_filename]
+
 
 def main(args):
     json_filename = f'{args.output_file_path}{args.excel_filename}{args.output_filename_addon}.json'
@@ -439,20 +522,18 @@ def main(args):
             # channels_list includes both stage and channel names
         
         if is_multi_channel:
+            # sheet name is just the channels names, and no stage names
             args.excel_sheet_name = ""
             for config in args.stages_channels:
                 _, channel = config.split(':')
                 args.excel_sheet_name += channel + "__"
-            args.excel_sheet_name = args.excel_sheet_name[:-2]
+            args.excel_sheet_name = args.excel_sheet_name[:-2]  # remove the last "__"
             args.stage_name = args.excel_sheet_name
 
         first = True
         stats = {}
         channel_stats = {}
         for channel_name, file_prefix in zip(channels_list, channels_filenames_list):
-            print(f'channel_name = {channel_name}')
-            print(f'file_prefix = {file_prefix}')
-
             args.channel_name = channel_name
             if first:
                 # label_prefix = swat_utils.get_file_prefix(args, args.channel_name)
@@ -460,13 +541,13 @@ def main(args):
                 first = False
             stats[channel_name] = get_channel_stats(args, channel_name, file_prefix, label_prefix, is_multi_channel)
             channel_stats[channel_name] = stats[channel_name][channel_name]
-            print(f'{channel_name}:{stats[channel_name][channel_name]["detected_labels"]}\n')
-        
+            print(f'{channel_name}:{stats[channel_name][channel_name]["detected_labels"]}\n')        
         
         save_to_csv(args.excel_filename, stats, is_multi_channel)
         stats[args.stage_name] = {args.stage_name: unify_stats(channel_stats, args.grace_time)}
 
-        save_for_final_stage(json_filename, args.stage_name, stats)
+        if not is_multi_channel:
+            save_for_final_stage(json_filename, args.stage_name, stats)
         del stats[args.stage_name][args.stage_name]['fp_array']
 
         for _, s in stats.items():
@@ -475,7 +556,10 @@ def main(args):
                     del value['fp_array']
                 print(f'{key:5}:{value}')
 
-        save_to_excel(args.excel_filename, stats)
+        if is_multi_channel:
+            save_to_excel_multi_channel(args.excel_filename, stats)
+        else:  # single channel
+            save_to_excel_single_channel(args.excel_filename, stats)
 
 
 def save_for_final_stage(filename, stage_name, stats):
