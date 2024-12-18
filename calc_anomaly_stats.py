@@ -329,73 +329,78 @@ def save_to_excel_single_channel(filename, stats):
 
     workbook.close()
 
-
 def save_to_excel_multi_channel(filename, stats):
     filename = f'{filename}{args.output_filename_addon}.xlsx'
-    workbook = xlsxwriter.Workbook(filename)
-    starting_row = 1
-
+    
+    # Store existing sheets' data if file exists
+    existing_sheets_data = {}
     if exists(filename):
-        # Read existing workbook
         xlrd.xlsx.ensure_elementtree_imported(False, None)
         xlrd.xlsx.Element_has_iter = True
         wbRD = xlrd.open_workbook(filename)
         
-        # If the sheet exists, get its row count and copy its contents
-        if args.excel_sheet_name in wbRD.sheet_names():
-            existing_sheet = wbRD.sheet_by_name(args.excel_sheet_name)
-            starting_row = existing_sheet.nrows
-            starting_row += 1  # want one line of space between existing sheet and new sheet
-            worksheet = workbook.add_worksheet(args.excel_sheet_name)
-            
-            # Copy existing content
-            format_cells = workbook.add_format({'align': 'center'})
-            for row in range(existing_sheet.nrows):
-                for col in range(existing_sheet.ncols):
-                    value = existing_sheet.cell(row, col).value
-                    worksheet.write(row, col, value, format_cells)
-                    if row == 0:  # For header row, adjust column width
-                        worksheet.set_column(col, col, max(8, len(str(value)) + 1))
-        else:
-            worksheet = workbook.add_worksheet(args.excel_sheet_name)
+        # Read all existing sheets
+        for sheet in wbRD.sheets():
+            sheet_data = []
+            for row in range(sheet.nrows):
+                row_data = []
+                for col in range(sheet.ncols):
+                    value = sheet.cell(row, col).value
+                    row_data.append(value)
+                sheet_data.append(row_data)
+            existing_sheets_data[sheet.name] = sheet_data
 
-    else:
-        worksheet = workbook.add_worksheet(args.excel_sheet_name)
-
-    # Make it as wide as the longest channel name
-    max_channel_name_length = max(len(channel_name) for _, s in stats.items() 
-                                for channel_name in s.keys() if channel_name != args.stage_name)
-    print(f'{max_channel_name_length=}')
-    worksheet.set_column(0, 0, max(20, max_channel_name_length + 2))  # +2 for padding
-
-
-    if len(args.excel_sheet_name) > 31:
-        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
-
-    # worksheet = workbook.add_worksheet(args.excel_sheet_name)
+    # Create new workbook
+    workbook = xlsxwriter.Workbook(filename)
     format_head = workbook.add_format({'align': 'center'})
     format_cells = workbook.add_format({'align': 'center'})
 
+    # First, recreate all existing sheets with their data
+    for sheet_name, sheet_data in existing_sheets_data.items():
+        if sheet_name == args.excel_sheet_name:  # Skip if it's the sheet we're updating
+            continue
+        worksheet = workbook.add_worksheet(sheet_name)
+        for row_idx, row_data in enumerate(sheet_data):
+            for col_idx, value in enumerate(row_data):
+                worksheet.write(row_idx, col_idx, value, format_cells)
+                if row_idx == 0:  # Adjust column width for headers
+                    worksheet.set_column(col_idx, col_idx, max(8, len(str(value)) + 1))
+
+    # Now add/update our sheet
+    if len(args.excel_sheet_name) > 31:
+        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
+    
+    worksheet = workbook.add_worksheet(args.excel_sheet_name)
+    
+    # If this sheet existed before, copy its old content
+    starting_row = 1
+    if args.excel_sheet_name in existing_sheets_data:
+        old_data = existing_sheets_data[args.excel_sheet_name]
+        for row_idx, row_data in enumerate(old_data):
+            for col_idx, value in enumerate(row_data):
+                worksheet.write(row_idx, col_idx, value, format_cells)
+        starting_row = len(old_data) + 1
+
+    # Write new data
     first = True
-    idx_channel = starting_row #1
+    idx_channel = starting_row
     for _, (_, s) in enumerate(stats.items()):
-        # print(f'{s=}')
-        
         for (channel_name, channel) in s.items():
             if channel_name == args.stage_name:
                 continue
             worksheet.write(idx_channel, 0, channel_name, format_head)
             write_stats_to_excel(worksheet, idx_channel, channel, format_cells)
             idx_channel += 1
-            # headings
-            if idx_channel == 2 and first:
+            if first:
                 first = False
-                worksheet.set_column(0, 0, 8)
+                worksheet.set_column(0, 0, 20)  # Make first column wider
                 for idx, key in enumerate(channel):
-                    worksheet.write(0, idx + 1, key, format_head)
+                    if starting_row == 1:  # Only write headers if this is a new sheet
+                        worksheet.write(0, idx + 1, key, format_head)
                     worksheet.set_column(idx + 1, idx + 1, max(8, len(key) + 1))
 
     workbook.close()
+
 
 
 def save_final_to_excel(filename, stats):
