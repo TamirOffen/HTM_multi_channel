@@ -35,10 +35,36 @@ python calc_anomaly_stats.py -sn MC -esn MC -ofa _multi_channel  ^
     --stages_channels P1:LIT101 P2:AIT202
 
 
-python swat_htm.py -sbp --MC_encoder_type combined --temporal_buffer_size 3 --combined_weights 0.7 0.3 --stages_channels ^
+python swat_htm.py -sbp --MC_encoder_type combined --temporal_buffer_size 2 --combined_weights 0.7 0.3 --stages_channels ^
     P1:LIT101:window=%WINDOW_1%,sdr_size=%SDR_SIZE_1% ^
     P2:AIT202:window=%WINDOW_2%,sdr_size=%SDR_SIZE_2%
 
 python calc_anomaly_stats.py -sn MC -esn MC -ofa _multi_channel  ^
-    --MC_encoder_type combined --temporal_buffer_size 3 --combined_weights 0.7 0.3  ^
+    --MC_encoder_type combined --temporal_buffer_size 2 --combined_weights 0.7 0.3  ^
     --stages_channels P1:LIT101 P2:AIT202    
+
+@REM for temporal buffer sizes of 2, 5, and 8:
+python swat_htm.py -sbp --MC_encoder_type temporal --temporal_buffer_size 2 --stages_channels ^
+    P1:LIT101:window=%WINDOW_1%,sdr_size=%SDR_SIZE_1% ^
+    P2:AIT202:window=%WINDOW_2%,sdr_size=%SDR_SIZE_2%
+
+python calc_anomaly_stats.py -sn MC -esn MC -ofa _multi_channel  ^
+    --MC_encoder_type temporal --temporal_buffer_size 2  ^
+    --stages_channels P1:LIT101 P2:AIT202
+
+python swat_htm.py -sbp --MC_encoder_type temporal --temporal_buffer_size 5 --stages_channels ^
+    P1:LIT101:window=%WINDOW_1%,sdr_size=%SDR_SIZE_1% ^
+    P2:AIT202:window=%WINDOW_2%,sdr_size=%SDR_SIZE_2%
+
+python calc_anomaly_stats.py -sn MC -esn MC -ofa _multi_channel  ^
+    --MC_encoder_type temporal --temporal_buffer_size 5  ^
+    --stages_channels P1:LIT101 P2:AIT202
+
+python swat_htm.py -sbp --MC_encoder_type temporal --temporal_buffer_size 8 --stages_channels ^
+    P1:LIT101:window=%WINDOW_1%,sdr_size=%SDR_SIZE_1% ^
+    P2:AIT202:window=%WINDOW_2%,sdr_size=%SDR_SIZE_2%
+
+python calc_anomaly_stats.py -sn MC -esn MC -ofa _multi_channel  ^
+    --MC_encoder_type temporal --temporal_buffer_size 8  ^
+    --stages_channels P1:LIT101 P2:AIT202
+
