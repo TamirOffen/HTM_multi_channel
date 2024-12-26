@@ -331,7 +331,10 @@ def save_to_excel_single_channel(filename, stats):
 
 def save_to_excel_multi_channel(filename, stats):
     filename = f'{filename}{args.output_filename_addon}.xlsx'
-    
+
+    if len(args.excel_sheet_name) > 31:
+        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
+        
     # Store existing sheets' data if file exists
     existing_sheets_data = {}
     if exists(filename):
@@ -367,8 +370,7 @@ def save_to_excel_multi_channel(filename, stats):
                     worksheet.set_column(col_idx, col_idx, max(8, len(str(value)) + 1))
 
     # Now add/update our sheet
-    if len(args.excel_sheet_name) > 31:
-        args.excel_sheet_name = args.excel_sheet_name[:28] + '...'
+    
     
     worksheet = workbook.add_worksheet(args.excel_sheet_name)
     

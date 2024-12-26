@@ -60,8 +60,8 @@ parser.add_argument('--hierarchy_lvl', '-hl', default=1, type=int)
 # for multi-channel support:
 parser.add_argument('--stages_channels', nargs='+', type=str, default=[], help='List of stage:channel:params configurations')
 parser.add_argument('--MC_encoder_type', choices=['TSSE', 'spatial', 'temporal', 'combined'], default='TSSE')
-parser.add_argument('--temporal_buffer_size', default=0, type=int)
-parser.add_argument('--combined_weights', default=[0.7, 0.3], type=float, nargs=2)  # spatial;temporal. only used for combined.
+parser.add_argument('--temporal_buffer_size', default=0, type=int)  # used for temporal and combined
+parser.add_argument('--combined_weights', default=[0.0, 0.0], type=float, nargs=2)  # spatial;temporal. only used for combined.
 
 default_parameters = {
     'enc': {
@@ -126,6 +126,8 @@ def main(args):
             channel_parts.append(f"{stage_name}_{channel_name}")
         combined_name = "mixed_channel__" + "__".join(channel_parts)
         output_filepath = ''.join([args.output_file_path, combined_name])
+        # output file format: paths__MC_encoder_type__temporal_buffer_size__spatial_weight__temporal_weight
+        output_filepath = f'{output_filepath}__{args.MC_encoder_type}__{args.temporal_buffer_size}__{int(args.combined_weights[0]*100)}__{int(args.combined_weights[1]*100)}'
         input_filepath = [''.join([args.input_file_path, stage_name, '_data.csv']) for stage_name,_,_ in configs]
         meta_filepath = [''.join([args.input_file_path, stage_name, '_meta.csv']) for stage_name,_,_ in configs]
         args.hierarchy_lvl = len(configs)
@@ -340,8 +342,11 @@ def main(args):
 
     print('Final Stage')
     print('===========')
-    parameters['runtime_config']['max_records_to_run'] = n_records[0] * len(input_data)
-    print(f'max_records_to_run: {parameters["runtime_config"]["max_records_to_run"]}')
+    if is_multi_channel:
+        parameters['runtime_config']['max_records_to_run'] = n_records[0] * len(input_data)
+    else:
+        parameters['runtime_config']['max_records_to_run'] = n_records
+    # print(f'max_records_to_run: {parameters["runtime_config"]["max_records_to_run"]}')
     parameters['runtime_config']['verbose'] = verbose
     parameters['runtime_config']['hierarchy_enabled'] = hierarchy_enabled
 
@@ -676,12 +681,16 @@ def runner(input_data, parameters, is_multi_channel=False):
         prm_output_filepath_json = ''.join([output_filepath, '_param.json'])
         with open(prm_output_filepath_json, 'w') as fj:
             fj.write(json.dumps(parameters))
+    if is_multi_channel:
+        prm_output_filepath_json = ''.join([output_filepath, '_param.json'])
+        with open(prm_output_filepath_json, 'w') as fj:
+            fj.write(json.dumps(parameters))
 
     init2 = True
     curr_channel = 0  # used in multi-channel to select the correct channel
 
     for count, record in enumerate(records):
-        if count % 100_000 == 0:
+        if not verbose and count % 100_000 == 0:
             # print(f'count: {count:,} / {len(records):,}')   
             print(f'count: {count:,} / {max_records_to_run:,}')
 
